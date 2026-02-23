@@ -5,6 +5,8 @@ export const minimumLimit = 20;
 export const defaultLimit = 20;
 export const maximumLimit = 200;
 
+export type SortOrder = "asc" | "desc";
+
 // Define default values
 export const defaultValues = {
   limit: defaultLimit,
@@ -12,6 +14,8 @@ export const defaultValues = {
 };
 
 export const jobSearchSchema = z.object({
+  createdAfter: z.string().optional(),
+  createdBefore: z.string().optional(),
   id: z
     .union([z.string(), z.array(z.string().min(1))])
     .optional()
@@ -48,5 +52,9 @@ export const jobSearchSchema = z.object({
     .union([z.string(), z.array(z.string().min(1))])
     .optional()
     .transform((v) => (Array.isArray(v) ? v : v ? [v] : undefined)),
+  sortOrder: z
+    .enum(["asc", "desc"])
+    .optional()
+    .transform((v) => v as SortOrder | undefined),
   state: z.nativeEnum(JobState).default(defaultValues.state),
 });

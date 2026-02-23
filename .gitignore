@@ -5,6 +5,7 @@
 .tool-versions
 /riverui
 /riverproui/riverproui
+.tanstack/
 
 # Logs
 logs

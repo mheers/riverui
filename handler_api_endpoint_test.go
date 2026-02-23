@@ -608,6 +608,74 @@ func TestAPIHandlerJobList(t *testing.T) {
 		require.Len(t, resp.Data, 1)
 		require.Equal(t, job.ID, resp.Data[0].ID)
 	})
+
+	t.Run("SortOrderDesc", func(t *testing.T) {
+		t.Parallel()
+
+		endpoint, bundle := setupEndpoint(ctx, t, newJobListEndpoint)
+
+		job1 := testfactory.Job(ctx, t, bundle.exec, &testfactory.JobOpts{
+			Kind:  ptrutil.Ptr("kind1"),
+			State: ptrutil.Ptr(rivertype.JobStateRunning),
+		})
+		job2 := testfactory.Job(ctx, t, bundle.exec, &testfactory.JobOpts{
+			Kind:  ptrutil.Ptr("kind2"),
+			State: ptrutil.Ptr(rivertype.JobStateRunning),
+		})
+
+		// Default order should be ascending (job1 first)
+		resp, err := apitest.InvokeHandler(ctx, endpoint.Execute, testMountOpts(t), &jobListRequest{})
+		require.NoError(t, err)
+		require.Len(t, resp.Data, 2)
+		require.Equal(t, job1.ID, resp.Data[0].ID)
+		require.Equal(t, job2.ID, resp.Data[1].ID)
+
+		// Explicit descending order should reverse
+		desc := "desc"
+		resp, err = apitest.InvokeHandler(ctx, endpoint.Execute, testMountOpts(t), &jobListRequest{
+			SortOrder: &desc,
+		})
+		require.NoError(t, err)
+		require.Len(t, resp.Data, 2)
+		require.Equal(t, job2.ID, resp.Data[0].ID)
+		require.Equal(t, job1.ID, resp.Data[1].ID)
+	})
+
+	t.Run("CreatedAfterAndBefore", func(t *testing.T) {
+		t.Parallel()
+
+		endpoint, bundle := setupEndpoint(ctx, t, newJobListEndpoint)
+
+		now := time.Now().UTC()
+		oldTime := now.Add(-48 * time.Hour)
+		recentTime := now.Add(-1 * time.Hour)
+
+		_ = testfactory.Job(ctx, t, bundle.exec, &testfactory.JobOpts{
+			CreatedAt: &oldTime,
+			State:     ptrutil.Ptr(rivertype.JobStateRunning),
+		})
+		job2 := testfactory.Job(ctx, t, bundle.exec, &testfactory.JobOpts{
+			CreatedAt: &recentTime,
+			State:     ptrutil.Ptr(rivertype.JobStateRunning),
+		})
+
+		// Filter to only recent jobs (created after 24 hours ago)
+		cutoff := now.Add(-24 * time.Hour)
+		resp, err := apitest.InvokeHandler(ctx, endpoint.Execute, testMountOpts(t), &jobListRequest{
+			CreatedAfter: &cutoff,
+		})
+		require.NoError(t, err)
+		require.Len(t, resp.Data, 1)
+		require.Equal(t, job2.ID, resp.Data[0].ID)
+
+		// Filter to only old jobs (created before 24 hours ago)
+		resp, err = apitest.InvokeHandler(ctx, endpoint.Execute, testMountOpts(t), &jobListRequest{
+			CreatedBefore: &cutoff,
+		})
+		require.NoError(t, err)
+		require.Len(t, resp.Data, 1)
+		require.Equal(t, job2.ID, resp.Data[0].ID) // job1 is older
+	})
 }
 
 func TestAPIHandlerJobRetry(t *testing.T) {
