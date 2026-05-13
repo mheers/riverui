@@ -50,9 +50,17 @@ export default defineConfig({
     }),
   ],
   resolve: {
-    alias: {
-      "@dagrejs/dagre": dagreCjsPath,
-    },
+    alias: [
+      { find: "@dagrejs/dagre", replacement: dagreCjsPath },
+      {
+        find: /^@\/(.*)/,
+        replacement: path.resolve(process.cwd(), "src/$1"),
+      },
+      {
+        find: /^@(components|contexts|hooks|providers|routes|services|stores|test|utils)(\/.*)?$/,
+        replacement: path.resolve(process.cwd(), "src/$1$2"),
+      },
+    ],
     tsconfigPaths: true,
   },
 });
