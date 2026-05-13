@@ -12,7 +12,7 @@ COPY src ./src
 RUN npx vite build
 
 # Build the Go binary, including embedded UI files:
-FROM golang:1.25.6-alpine AS build-go
+FROM golang:1.25.9-alpine AS build-go
 WORKDIR /go/src/riverui
 
 COPY go.mod go.sum ./
@@ -29,7 +29,7 @@ COPY --from=build-ui /app/dist ./dist
 
 RUN go build -trimpath -ldflags="-w -s -buildid=" -o /bin/riverui ./cmd/riverui
 
-FROM alpine:3.23.3
+FROM alpine:3.23.4
 ENV PATH_PREFIX="/"
 COPY --from=build-go /bin/riverui /bin/riverui
 CMD ["/bin/sh", "-c", "/bin/riverui -prefix=$PATH_PREFIX"]

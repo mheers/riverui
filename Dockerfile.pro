@@ -12,7 +12,7 @@ COPY src ./src
 RUN npx vite build
 
 # Build the Go binary, including embedded UI files:
-FROM golang:1.25.6-alpine AS build-go
+FROM golang:1.25.9-alpine AS build-go
 WORKDIR /go/src/riverui
 
 # Download main module dependencies first
@@ -42,7 +42,7 @@ COPY --from=build-ui /app/dist ./dist
 WORKDIR /go/src/riverui/riverproui
 RUN go build -trimpath -ldflags="-w -s -buildid=" -o /bin/riverproui ./cmd/riverproui
 
-FROM alpine:3.23.3
+FROM alpine:3.23.4
 ENV PATH_PREFIX="/"
 COPY --from=build-go /bin/riverproui /bin/riverproui
 CMD ["/bin/sh", "-c", "/bin/riverproui -prefix=$PATH_PREFIX"]
