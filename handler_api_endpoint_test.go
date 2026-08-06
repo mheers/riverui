@@ -726,7 +726,7 @@ func TestAPIHandlerJobList(t *testing.T) {
 		oldTime := now.Add(-48 * time.Hour)
 		recentTime := now.Add(-1 * time.Hour)
 
-		_ = testfactory.Job(ctx, t, bundle.exec, &testfactory.JobOpts{
+		job1 := testfactory.Job(ctx, t, bundle.exec, &testfactory.JobOpts{
 			CreatedAt: &oldTime,
 			State:     ptrutil.Ptr(rivertype.JobStateRunning),
 		})
@@ -750,7 +750,7 @@ func TestAPIHandlerJobList(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.Len(t, resp.Data, 1)
-		require.Equal(t, job2.ID, resp.Data[0].ID) // job1 is older
+		require.Equal(t, job1.ID, resp.Data[0].ID)
 	})
 }
 
