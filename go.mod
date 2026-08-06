@@ -5,13 +5,14 @@ go 1.25.0
 toolchain go1.25.7
 
 require (
-	github.com/jackc/pgx/v5 v5.9.2
+	github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6
+	github.com/jackc/pgx/v5 v5.10.0
 	github.com/riverqueue/apiframe v0.0.0-20251229202423-2b52ce1c482e
-	github.com/riverqueue/river v0.35.1
-	github.com/riverqueue/river/riverdriver v0.35.1
-	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.35.1
-	github.com/riverqueue/river/rivershared v0.35.1
-	github.com/riverqueue/river/rivertype v0.35.1
+	github.com/riverqueue/river v0.41.1
+	github.com/riverqueue/river/riverdriver v0.41.1
+	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.41.1
+	github.com/riverqueue/river/rivershared v0.41.1
+	github.com/riverqueue/river/rivertype v0.41.1
 	github.com/rs/cors v1.11.1
 	github.com/samber/slog-http v1.12.1
 	github.com/stretchr/testify v1.11.1
@@ -24,23 +25,22 @@ require (
 	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/go-playground/validator/v10 v10.30.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/tidwall/gjson v1.18.0 // indirect
+	github.com/tidwall/gjson v1.19.0 // indirect
 	github.com/tidwall/match v1.2.0 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
 	go.opentelemetry.io/otel v1.29.0 // indirect
 	go.opentelemetry.io/otel/trace v1.29.0 // indirect
 	go.uber.org/goleak v1.3.0 // indirect
-	golang.org/x/crypto v0.46.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.39.0 // indirect
-	golang.org/x/text v0.36.0 // indirect
+	golang.org/x/crypto v0.52.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 

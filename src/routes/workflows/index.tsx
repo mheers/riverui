@@ -1,5 +1,6 @@
 import WorkflowList from "@components/WorkflowList";
 import { useRefreshSetting } from "@contexts/RefreshSettings.hook";
+import { refreshQueryOptions } from "@contexts/RefreshSettings.query";
 import { WorkflowState } from "@services/types";
 import { listWorkflows, listWorkflowsKey } from "@services/workflows";
 import { queryOptions, useQuery } from "@tanstack/react-query";
@@ -47,19 +48,18 @@ export const Route = createFileRoute("/workflows/")({
 
 function WorkflowsIndexComponent() {
   const refreshSettings = useRefreshSetting();
-  const refetchInterval = refreshSettings.intervalMs;
-  const { workflowsQueryOptions } = Route.useRouteContext();
-  const loaderDeps = Route.useLoaderDeps();
+  const refreshOptions = refreshQueryOptions(refreshSettings.intervalMs);
+  const { features, workflowsQueryOptions } = Route.useRouteContext();
   const workflowsQuery = useQuery({
     ...workflowsQueryOptions,
-    refetchInterval,
+    ...refreshOptions,
   });
 
   return (
     <WorkflowList
       loading={workflowsQuery.isLoading}
-      showingAll={!loaderDeps.state}
       workflowItems={workflowsQuery.data || []}
+      workflowQueriesEnabled={features.workflowQueries}
     />
   );
 }

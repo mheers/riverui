@@ -2,6 +2,11 @@ import { Filter, FilterTypeId } from "@components/job-search/JobSearch";
 import JobList from "@components/JobList";
 import { useRefreshSetting } from "@contexts/RefreshSettings.hook";
 import {
+  type RefreshQueryOptions,
+  refreshQueryOptions,
+} from "@contexts/RefreshSettings.query";
+import { useRetryJobs } from "@hooks/use-retry-jobs";
+import {
   defaultValues,
   jobSearchSchema,
   SortOrder,
@@ -13,10 +18,9 @@ import {
   listJobs,
   ListJobsKey,
   listJobsKey,
-  retryJobs,
 } from "@services/jobs";
 import { countsByState, countsByStateKey } from "@services/states";
-import { toastError, toastSuccess } from "@services/toast";
+import { toastError } from "@services/toast";
 import { JobState } from "@services/types";
 import {
   PlaceholderDataFunction,
@@ -138,7 +142,7 @@ function JobsIndexComponent() {
     sortOrder,
   } = Route.useLoaderDeps();
   const refreshSettings = useRefreshSetting();
-  const refetchInterval = refreshSettings.intervalMs;
+  const refreshOptions = refreshQueryOptions(refreshSettings.intervalMs);
   const [pauseRefetches, setJobRefetchesPaused] = useState(false);
   const queryClient = useQueryClient();
 
@@ -157,11 +161,11 @@ function JobsIndexComponent() {
       },
       {
         pauseRefetches,
-        refetchInterval,
+        refreshOptions,
       },
     ),
   );
-  const statesQuery = useQuery(statesQueryOptions({ refetchInterval }));
+  const statesQuery = useQuery(statesQueryOptions(refreshOptions));
 
   const canShowFewer = limit > minimumLimit;
   const canShowMore = limit < maximumLimit;
@@ -349,20 +353,14 @@ function JobsIndexComponent() {
     },
   });
 
-  const retryMutation = useMutation({
-    mutationFn: async (jobIDs: bigint[], context) =>
-      retryJobs({ ids: jobIDs }, context),
-    throwOnError: true,
+  const retryMutation = useRetryJobs({
     onSuccess: () => {
-      toastSuccess({
-        message: "Jobs enqueued for retry",
-        duration: 2000,
-      });
       queryClient.invalidateQueries({
         queryKey: listJobsKey({ limit, state }),
       });
       queryClient.invalidateQueries({ queryKey: countsByStateKey() });
     },
+    successMessage: "Jobs enqueued for retry",
   });
 
   const handleSortOrderChange = useCallback(
@@ -458,7 +456,7 @@ const jobsQueryOptions = (
     sortOrder?: SortOrder;
     state: JobState;
   },
-  opts?: { pauseRefetches: boolean; refetchInterval: number },
+  opts?: { pauseRefetches: boolean; refreshOptions: RefreshQueryOptions },
 ) => {
   const keepPreviousDataUnlessStateChanged: PlaceholderDataFunction<
     JobMinimal[],
@@ -485,13 +483,17 @@ const jobsQueryOptions = (
     }),
     queryFn: listJobs,
     placeholderData: keepPreviousDataUnlessStateChanged,
-    refetchInterval: !opts?.pauseRefetches && opts?.refetchInterval,
+    ...(opts
+      ? opts.pauseRefetches
+        ? refreshQueryOptions(0)
+        : opts.refreshOptions
+      : {}),
   });
 };
 
-const statesQueryOptions = (opts?: { refetchInterval: number }) =>
+const statesQueryOptions = (opts?: RefreshQueryOptions) =>
   queryOptions({
     queryKey: countsByStateKey(),
     queryFn: countsByState,
-    refetchInterval: opts?.refetchInterval,
+    ...opts,
   });

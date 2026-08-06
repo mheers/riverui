@@ -3,6 +3,7 @@ package riverui
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivershared/riversharedtest"
 	"github.com/riverqueue/river/rivershared/startstop"
+	"github.com/riverqueue/river/rivershared/uniquestates"
 	"github.com/riverqueue/river/rivershared/util/ptrutil"
 	"github.com/riverqueue/river/rivertype"
 
@@ -73,6 +75,48 @@ func setupEndpointWithOpts[TEndpoint any](ctx context.Context, t *testing.T, ini
 		exec:   exec,
 		logger: logger,
 		tx:     tx,
+	}
+}
+
+func setupEndpointWithCustomSchema[TEndpoint any](ctx context.Context, t *testing.T, initFunc func(bundle apibundle.APIBundle[pgx.Tx]) *TEndpoint) (*TEndpoint, *setupEndpointTestBundle) {
+	t.Helper()
+
+	var (
+		logger = riversharedtest.Logger(t)
+		driver = riverpgxv5.New(riversharedtest.DBPool(ctx, t))
+		schema = riverdbtest.TestSchema(ctx, t, driver, nil)
+	)
+
+	exec, err := driver.GetExecutor().Begin(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, exec.Rollback(ctx)) })
+	require.NoError(t, exec.Exec(ctx, "SET LOCAL search_path TO public"))
+
+	client, err := river.NewClient(driver, &river.Config{
+		Logger: logger,
+		Schema: schema,
+	})
+	require.NoError(t, err)
+
+	endpoint := initFunc(apibundle.APIBundle[pgx.Tx]{
+		Archetype:  riversharedtest.BaseServiceArchetype(t),
+		Client:     client,
+		DB:         exec,
+		Driver:     driver,
+		Extensions: func(_ context.Context) (map[string]bool, error) { return map[string]bool{}, nil },
+		Logger:     logger,
+	})
+
+	if service, ok := any(endpoint).(startstop.Service); ok {
+		require.NoError(t, service.Start(ctx))
+		t.Cleanup(service.Stop)
+	}
+
+	return endpoint, &setupEndpointTestBundle{
+		client: client,
+		exec:   exec,
+		logger: logger,
+		tx:     driver.UnwrapTx(exec),
 	}
 }
 
@@ -234,6 +278,42 @@ func TestAPIHandlerAutocompleteList(t *testing.T) {
 	})
 }
 
+func TestAPIHandlerAutocompleteListCustomSchema(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	endpoint, bundle := setupEndpointWithCustomSchema(ctx, t, newAutocompleteListEndpoint)
+	schema := bundle.client.Schema()
+
+	jobParams := testfactory.Job_Build(t, &testfactory.JobOpts{Kind: ptrutil.Ptr("custom_schema_job")})
+	jobParams.Schema = schema
+	_, err := bundle.exec.JobInsertFull(ctx, jobParams)
+	require.NoError(t, err)
+
+	_, err = bundle.exec.QueueCreateOrSetUpdatedAt(ctx, &riverdriver.QueueCreateOrSetUpdatedAtParams{
+		Metadata: []byte("{}"),
+		Name:     "custom_schema_queue",
+		Schema:   schema,
+	})
+	require.NoError(t, err)
+
+	jobKindResp, err := apitest.InvokeHandler(ctx, endpoint.Execute, testMountOpts(t), &autocompleteListRequest{
+		Facet: autocompleteFacetJobKind,
+		Match: ptrutil.Ptr("custom_schema_job"),
+	})
+	require.NoError(t, err)
+	require.Len(t, jobKindResp.Data, 1)
+	require.Equal(t, "custom_schema_job", *jobKindResp.Data[0])
+
+	queueNameResp, err := apitest.InvokeHandler(ctx, endpoint.Execute, testMountOpts(t), &autocompleteListRequest{
+		Facet: autocompleteFacetQueueName,
+		Match: ptrutil.Ptr("custom_schema_queue"),
+	})
+	require.NoError(t, err)
+	require.Len(t, queueNameResp.Data, 1)
+	require.Equal(t, "custom_schema_queue", *queueNameResp.Data[0])
+}
+
 func TestAPIHandlerFeaturesGet(t *testing.T) {
 	t.Parallel()
 
@@ -245,9 +325,7 @@ func TestAPIHandlerFeaturesGet(t *testing.T) {
 		// DisableSchemaSharing is required because we're making DB schema changes.
 		endpoint, bundle := setupEndpointWithOpts(ctx, t, newFeaturesGetEndpoint, &riverdbtest.TestTxOpts{DisableSchemaSharing: true})
 
-		_, err := bundle.tx.Exec(ctx, `DROP TABLE IF EXISTS river_client CASCADE;`)
-		require.NoError(t, err)
-		_, err = bundle.tx.Exec(ctx, `DROP TABLE IF EXISTS river_job_sequence;`)
+		_, err := bundle.tx.Exec(ctx, `DROP TABLE IF EXISTS river_job_sequence;`)
 		require.NoError(t, err)
 		_, err = bundle.tx.Exec(ctx, `DROP TABLE IF EXISTS river_producer;`)
 		require.NoError(t, err)
@@ -270,9 +348,7 @@ func TestAPIHandlerFeaturesGet(t *testing.T) {
 		// DisableSchemaSharing is required because we're making DB schema changes.
 		endpoint, bundle := setupEndpointWithOpts(ctx, t, newFeaturesGetEndpoint, &riverdbtest.TestTxOpts{DisableSchemaSharing: true})
 
-		_, err := bundle.tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS river_client (id SERIAL PRIMARY KEY);`)
-		require.NoError(t, err)
-		_, err = bundle.tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS river_job_sequence (id SERIAL PRIMARY KEY);`)
+		_, err := bundle.tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS river_job_sequence (id SERIAL PRIMARY KEY);`)
 		require.NoError(t, err)
 		_, err = bundle.tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS river_producer (id SERIAL PRIMARY KEY);`)
 		require.NoError(t, err)
@@ -717,6 +793,38 @@ func TestAPIHandlerJobRetry(t *testing.T) {
 
 		_, err := apitest.InvokeHandler(ctx, endpoint.Execute, testMountOpts(t), &jobRetryRequest{JobIDs: []int64String{123}})
 		uicommontest.RequireAPIError(t, NewNotFoundJob(123), err)
+	})
+
+	t.Run("UniqueConflict", func(t *testing.T) {
+		t.Parallel()
+
+		endpoint, bundle := setupEndpoint(ctx, t, newJobRetryEndpoint)
+		uniqueKey := []byte("job-retry-unique-conflict")
+		uniqueStates := uniquestates.UniqueStatesToBitmask([]rivertype.JobState{rivertype.JobStateAvailable})
+
+		discardedParams := testfactory.Job_Build(t, &testfactory.JobOpts{
+			FinalizedAt: ptrutil.Ptr(time.Now()),
+			State:       ptrutil.Ptr(rivertype.JobStateDiscarded),
+		})
+		discardedParams.UniqueKey = uniqueKey
+		discardedParams.UniqueStates = uniqueStates
+		discardedJob, err := bundle.exec.JobInsertFull(ctx, discardedParams)
+		require.NoError(t, err)
+
+		activeParams := testfactory.Job_Build(t, nil)
+		activeParams.UniqueKey = uniqueKey
+		activeParams.UniqueStates = uniqueStates
+		_, err = bundle.exec.JobInsertFull(ctx, activeParams)
+		require.NoError(t, err)
+
+		_, err = apitest.InvokeHandler(ctx, endpoint.Execute, testMountOpts(t), &jobRetryRequest{JobIDs: []int64String{int64String(discardedJob.ID)}})
+		require.Error(t, err)
+
+		var apiErr *jobRetryUniqueConflictError
+		require.ErrorAs(t, err, &apiErr)
+		require.Equal(t, http.StatusConflict, apiErr.StatusCode)
+		require.Equal(t, jobRetryUniqueMessage, apiErr.Message)
+		require.Error(t, apiErr.InternalError)
 	})
 }
 

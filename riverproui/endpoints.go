@@ -90,14 +90,6 @@ func (e *endpoints[TTx]) Extensions(ctx context.Context) (map[string]bool, error
 	}
 	defer execTx.Rollback(ctx)
 
-	hasClientTable, err := execTx.TableExists(ctx, &riverdriver.TableExistsParams{
-		Schema: schema,
-		Table:  "river_client",
-	})
-	if err != nil {
-		return nil, err
-	}
-
 	hasPeriodicJobTable, err := execTx.TableExists(ctx, &riverdriver.TableExistsParams{
 		Schema: schema,
 		Table:  "river_periodic_job",
@@ -122,27 +114,17 @@ func (e *endpoints[TTx]) Extensions(ctx context.Context) (map[string]bool, error
 		return nil, err
 	}
 
-	indexResults, err := execTx.IndexesExist(ctx, &riverdriver.IndexesExistParams{
-		IndexNames: []string{
-			"river_job_workflow_list_active",
-			"river_job_workflow_scheduling",
-		},
-		Schema: schema,
-	})
+	hasWorkflowV2Tables, err := prohandler.HasWorkflowV2Tables(ctx, execTx, schema)
 	if err != nil {
 		return nil, err
 	}
 
-	hasWorkflows := indexResults["river_job_workflow_list_active"] || indexResults["river_job_workflow_scheduling"]
-
 	return map[string]bool{
 		"durable_periodic_jobs": hasPeriodicJobTable,
 		"producer_queries":      true,
-		"workflow_queries":      true,
-		"has_client_table":      hasClientTable,
+		"workflow_queries":      hasWorkflowV2Tables,
 		"has_producer_table":    hasProducerTable,
 		"has_sequence_table":    hasSequenceTable,
-		"has_workflows":         hasWorkflows,
 	}, nil
 }
 
@@ -181,6 +163,8 @@ func (e *endpoints[TTx]) MountEndpoints(archetype *baseservice.Archetype, logger
 		apiendpoint.Mount(mux, prohandler.NewWorkflowGetEndpoint(bundle), mountOpts),
 		apiendpoint.Mount(mux, prohandler.NewWorkflowListEndpoint(bundle), mountOpts),
 		apiendpoint.Mount(mux, prohandler.NewWorkflowRetryEndpoint(bundle), mountOpts),
+		apiendpoint.Mount(mux, prohandler.NewWorkflowTaskSignalsEndpoint(bundle), mountOpts),
+		apiendpoint.Mount(mux, prohandler.NewWorkflowTaskWaitDiagnosticsEndpoint(bundle), mountOpts),
 	)
 
 	return endpoints

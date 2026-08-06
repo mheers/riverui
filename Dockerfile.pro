@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1
 
-FROM node:22-alpine AS build-ui
+FROM node:24.14.1-alpine@sha256:8510330d3eb72c804231a834b1a8ebb55cb3796c3e4431297a24d246b8add4d5 AS build-ui
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm install
+COPY .npmrc package.json package-lock.json ./
+RUN npm ci
 ENV NODE_ENV=production
 COPY vite.config.ts tsconfig.json tsconfig.node.json tsr.config.json ./
 COPY public ./public
@@ -12,7 +12,7 @@ COPY src ./src
 RUN npx vite build
 
 # Build the Go binary, including embedded UI files:
-FROM golang:1.25.9-alpine AS build-go
+FROM golang:1.25.11-alpine@sha256:523c3effe300580ed375e43f43b1c9b091b68e935a7c3a92bfcc4e7ed55b18c2 AS build-go
 WORKDIR /go/src/riverui
 
 # Download main module dependencies first
@@ -42,7 +42,7 @@ COPY --from=build-ui /app/dist ./dist
 WORKDIR /go/src/riverui/riverproui
 RUN go build -trimpath -ldflags="-w -s -buildid=" -o /bin/riverproui ./cmd/riverproui
 
-FROM alpine:3.23.4
+FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 ENV PATH_PREFIX="/"
 COPY --from=build-go /bin/riverproui /bin/riverproui
 CMD ["/bin/sh", "-c", "/bin/riverproui -prefix=$PATH_PREFIX"]

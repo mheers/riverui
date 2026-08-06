@@ -11,6 +11,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add sort order toggle (ASC/DESC) and time range filter (created after/before) to the job list dashboard. [PR #XXX](https://github.com/riverqueue/riverui/pull/XXX).
 
+## [v0.17.0] - 2026-07-31
+
+### Added
+
+- Add first-class custom database schema support to the `riverui` and `riverproui` executables through the `-schema` flag and `RIVER_SCHEMA` environment variable. [PR #629](https://github.com/riverqueue/riverui/pull/629).
+
+### Fixed
+
+- Job retry: keep the current page open and show an actionable error when a retry conflicts with another active unique job. [PR #623](https://github.com/riverqueue/riverui/pull/623).
+- Global live update pause: disable automatic query refreshes on browser focus and reconnect, preventing paused workflow detail pages from re-fetching wait data outside the configured refresh interval. [PR #584](https://github.com/riverqueue/riverui/pull/584).
+- Job detail: preserve line breaks in attempt logs while keeping structured JSON viewer content outside preformatted code markup. [PR #592](https://github.com/riverqueue/riverui/pull/592).
+
+## [v0.16.0] - 2026-05-19
+
+Version 0.16.0 includes support for the all new workflow engine in River Pro v0.24.0, including signals, timers, and greater introspection capabilities.
+
+⚠️ Workflow features in v0.16.0 rely on new workflow-related tables that are part of the riverpro v0.24.0 release. River UI's workflow queries may be disabled or poorly performing until the River Pro migration v006 has been applied in your database.
+
+### Added
+
+- Workflow detail: add support for new River Pro workflow features, including signals and timers. [PR #567](https://github.com/riverqueue/riverui/pull/567).
+
 ### Fixed
 
 - Workflow detail: add on-canvas zoom controls for click/touch navigation and improve controls styling for dark mode. [PR #524](https://github.com/riverqueue/riverui/pull/524).
@@ -21,6 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Job delete actions: require confirmation before deleting a single job or selected jobs in bulk. [Fixes #545](https://github.com/riverqueue/riverui/issues/545). [PR #546](https://github.com/riverqueue/riverui/pull/546).
 - Workflow detail: show the backend's not-found message instead of crashing when a workflow ID does not exist. [PR #564](https://github.com/riverqueue/riverui/pull/564).
 - Job detail: render a dedicated `Snoozed` timeline step for scheduled jobs with prior attempts so snoozed jobs no longer show negative wait durations. [PR #565](https://github.com/riverqueue/riverui/pull/565).
+- Workflow detail: source wait phases, timers, signal evidence, and task wait reasons from backend workflow wait metadata instead of frontend-derived placeholders. [PR #567](https://github.com/riverqueue/riverui/pull/567).
+- Workflow detail: redesign wait inspection around a denser task-side summary, structured term/timer/signal cards, reliable full-node selection, Storybook workflow detail coverage below the diagram, and a tighter details layout that keeps job metadata with the main job card. [PR #567](https://github.com/riverqueue/riverui/pull/567).
+- Workflow detail: add a task-signal debugger backed by task-scoped River Pro signal reads while keeping workflow detail wait data summary-only. [PR #567](https://github.com/riverqueue/riverui/pull/567).
+- Workflow detail: clarify wait inspection with a compact condition matrix, phase-aware match summaries, explicit signal scopes, condition-type icons, per-term CEL definitions, and denser timer/dependency/signal evidence. [PR #567](https://github.com/riverqueue/riverui/pull/567).
+- Workflow detail: replace the flat narrative event list with a task timeline that keeps dependencies in one place, emphasizes wait evidence and durations, avoids showing staged events before a task is actually runnable, and uses a lower-noise milestone hierarchy. [PR #567](https://github.com/riverqueue/riverui/pull/567).
+- Workflow detail: remove the not-started wait preview from dependency progress milestones. [PR #567](https://github.com/riverqueue/riverui/pull/567).
 
 ## [v0.15.0] - 2026-02-26
 
