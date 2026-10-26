@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM node:24.14.1-alpine@sha256:8510330d3eb72c804231a834b1a8ebb55cb3796c3e4431297a24d246b8add4d5 AS build-ui
+FROM node:24.21.0-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS build-ui
 WORKDIR /app
 COPY .npmrc package.json package-lock.json ./
 RUN npm ci
@@ -12,7 +12,7 @@ COPY src ./src
 RUN npx vite build
 
 # Build the Go binary, including embedded UI files:
-FROM golang:1.25.11-alpine@sha256:523c3effe300580ed375e43f43b1c9b091b68e935a7c3a92bfcc4e7ed55b18c2 AS build-go
+FROM golang:1.26.8-alpine@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c AS build-go
 WORKDIR /go/src/riverui
 
 # Download main module dependencies first
@@ -40,9 +40,14 @@ COPY --from=build-ui /app/dist ./dist
 
 # Build the riverproui binary
 WORKDIR /go/src/riverui/riverproui
-RUN go build -trimpath -ldflags="-w -s -buildid=" -o /bin/riverproui ./cmd/riverproui
+# Pass metadata from the original checkout; this partial copy is not a Git checkout.
+ARG BUILD_VERSION
+ARG BUILD_REVISION
+ARG BUILD_COMMIT_TIME
 
-FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+RUN go build -trimpath -ldflags="-w -s -buildid= -X riverqueue.com/riverui/internal/buildinfo.version=${BUILD_VERSION} -X riverqueue.com/riverui/internal/buildinfo.revision=${BUILD_REVISION} -X riverqueue.com/riverui/internal/buildinfo.commitTime=${BUILD_COMMIT_TIME}" -o /bin/riverproui ./cmd/riverproui
+
+FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 ENV PATH_PREFIX="/"
 COPY --from=build-go /bin/riverproui /bin/riverproui
 CMD ["/bin/sh", "-c", "/bin/riverproui -prefix=$PATH_PREFIX"]

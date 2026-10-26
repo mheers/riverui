@@ -11,6 +11,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add sort order toggle (ASC/DESC) and time range filter (created after/before) to the job list dashboard. [PR #XXX](https://github.com/riverqueue/riverui/pull/XXX).
 
+## [v0.22.0] - 2026-10-24
+
+### Added
+
+- Add a Pro-only dead letter queue panel that lists discarded jobs newest first, with ID, kind, queue, priority, and tag filters, dead letter autocomplete, and More/Fewer controls to inspect jobs and retry them as new jobs. Live updates start paused and can be enabled independently of the Jobs pane. [PR #711](https://github.com/riverqueue/riverui/pull/711).
+
+### Changed
+
+- Upgrade River to v0.49.0. [PR #703](https://github.com/riverqueue/riverui/pull/703).
+- Require Node.js 24.15+ or 26+ for frontend development and use Node.js 24.21.0 in CI and container builds to support the updated test dependencies. [PR #690](https://github.com/riverqueue/riverui/pull/690).
+
+### Fixed
+
+- Show queues whose concurrency metadata is missing, `null`, or `{}` as having no concurrency override, matching how River Pro interprets them, and stop showing a zero concurrency config for producers that report none. [PR #704](https://github.com/riverqueue/riverui/pull/704).
+- Reject negative queue concurrency `global_limit` and `local_limit` values with a 400 error instead of storing them. [PR #704](https://github.com/riverqueue/riverui/pull/704).
+- Keep workflow diagram layouts compatible with Dagre's package exports after dependency upgrades. [PR #687](https://github.com/riverqueue/riverui/pull/687).
+
+## [v0.21.0] - 2026-10-07
+
+### Changed
+
+- Keep large counts responsive while preserving useful magnitude with bounded live counts, adaptively cached exact snapshots, PostgreSQL planner estimates, and SQLite STAT4 estimates. Expire stale count caches and show count accuracy consistently in the sidebar and mobile menu. [PR #655](https://github.com/riverqueue/riverui/pull/655).
+
+## [v0.20.0] - 2026-10-01
+
+### Added
+
+- Show the running server's version, commit, commit date, and Go version on the settings page. [PR #685](https://github.com/riverqueue/riverui/pull/685).
+
+### Changed
+
+- Upgrade River to v0.48.0 and River Pro to v0.31.0. [PR #694](https://github.com/riverqueue/riverui/pull/694).
+
+## [v0.19.0] - 2026-08-25
+
+### Changed
+
+- Upgrade supported Go versions to 1.26 and 1.27. [PR #665](https://github.com/riverqueue/riverpro/pull/665).
+- Update River dependency to v0.45.0. [PR #665](https://github.com/riverqueue/riverui/pull/665).
+- Update River Pro dependency to v0.28.0. [PR #665](https://github.com/riverqueue/riverui/pull/665).
+
+## [v0.18.1] - 2026-08-23
+
+### Changed
+
+- Update River Pro dependency to v0.27.2. [PR #663](https://github.com/riverqueue/riverui/pull/663).
+
+## [v0.18.0] - 2026-08-22
+
+### Added
+
+- Job list: filter jobs matching any of the selected exact tags. [PR #548](https://github.com/riverqueue/riverui/pull/548).
+- Add River Pro UI support for SQLite through the new `riverprosqlite` driver. [PR #657](https://github.com/riverqueue/riverui/pull/657).
+
+### Fixed
+
+- Job and workflow detail: serialize jobs without attempt errors as an empty array so SQLite-backed pages render correctly. [PR #657](https://github.com/riverqueue/riverui/pull/657).
+- Job args: preserve large numeric JSON values exactly when displaying and copying args, while keeping object keys sorted. [Fixes #593](https://github.com/riverqueue/riverui/issues/593). [PR #594](https://github.com/riverqueue/riverui/pull/594).
+- JSON viewer: render empty and escaped object property keys as valid JSON strings. [PR #632](https://github.com/riverqueue/riverui/pull/632).
+
 ## [v0.17.0] - 2026-07-31
 
 ### Added

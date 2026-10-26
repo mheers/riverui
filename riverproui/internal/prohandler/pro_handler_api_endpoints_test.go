@@ -20,7 +20,6 @@ import (
 	"github.com/riverqueue/river/riverdriver"
 	"github.com/riverqueue/river/rivershared/riversharedtest"
 	"github.com/riverqueue/river/rivershared/startstop"
-	"github.com/riverqueue/river/rivershared/util/ptrutil"
 	"github.com/riverqueue/river/rivertype"
 
 	"riverqueue.com/riverpro"
@@ -32,6 +31,7 @@ import (
 	"riverqueue.com/riverui/internal/riverinternaltest/testfactory"
 	"riverqueue.com/riverui/internal/uicommontest"
 	"riverqueue.com/riverui/riverproui/internal/protestfactory"
+	"riverqueue.com/riverui/riverproui/internal/uitype"
 )
 
 type setupEndpointTestBundle struct {
@@ -104,8 +104,8 @@ func TestProAPIHandlerPeriodicJobList(t *testing.T) {
 
 		endpoint, bundle := setupEndpoint(ctx, t, NewPeriodicJobListEndpoint)
 
-		job1 := protestfactory.PeriodicJob(ctx, t, bundle.exec, &protestfactory.PeriodicJobOpts{ID: ptrutil.Ptr("alpha"), NextRunAt: ptrutil.Ptr(time.Now().Add(time.Minute)), Schema: bundle.schema})
-		job2 := protestfactory.PeriodicJob(ctx, t, bundle.exec, &protestfactory.PeriodicJobOpts{ID: ptrutil.Ptr("beta"), NextRunAt: ptrutil.Ptr(time.Now().Add(2 * time.Minute)), Schema: bundle.schema})
+		job1 := protestfactory.PeriodicJob(ctx, t, bundle.exec, &protestfactory.PeriodicJobOpts{ID: new("alpha"), NextRunAt: new(time.Now().Add(time.Minute)), Schema: bundle.schema})
+		job2 := protestfactory.PeriodicJob(ctx, t, bundle.exec, &protestfactory.PeriodicJobOpts{ID: new("beta"), NextRunAt: new(time.Now().Add(2 * time.Minute)), Schema: bundle.schema})
 
 		resp, err := apitest.InvokeHandler(ctx, endpoint.Execute, testMountOpts(t), &periodicJobListRequest{})
 		require.NoError(t, err)
@@ -122,10 +122,73 @@ func TestProAPIHandlerPeriodicJobList(t *testing.T) {
 		job1 := protestfactory.PeriodicJob(ctx, t, bundle.exec, &protestfactory.PeriodicJobOpts{Schema: bundle.schema})
 		_ = protestfactory.PeriodicJob(ctx, t, bundle.exec, &protestfactory.PeriodicJobOpts{Schema: bundle.schema})
 
-		resp, err := apitest.InvokeHandler(ctx, endpoint.Execute, testMountOpts(t), &periodicJobListRequest{Limit: ptrutil.Ptr(1)})
+		resp, err := apitest.InvokeHandler(ctx, endpoint.Execute, testMountOpts(t), &periodicJobListRequest{Limit: new(1)})
 		require.NoError(t, err)
 		require.Len(t, resp.Data, 1)
 		require.Equal(t, job1.ID, resp.Data[0].ID)
+	})
+}
+
+func TestProducerConcurrencyFromMetadata(t *testing.T) {
+	t.Parallel()
+
+	t.Run("EmptyMetadata", func(t *testing.T) {
+		t.Parallel()
+
+		require.Nil(t, producerConcurrencyFromMetadata(nil))
+		require.Nil(t, producerConcurrencyFromMetadata([]byte(`{}`)))
+	})
+
+	t.Run("EmptyObject", func(t *testing.T) {
+		t.Parallel()
+
+		require.Nil(t, producerConcurrencyFromMetadata([]byte(`{"concurrency": {}}`)))
+	})
+
+	t.Run("FullConfig", func(t *testing.T) {
+		t.Parallel()
+
+		require.Equal(t, &uitype.ConcurrencyConfig{
+			GlobalLimit: 10,
+			LocalLimit:  5,
+			Partition: uitype.PartitionConfig{
+				ByArgs: []string{"customer_id"},
+				ByKind: true,
+			},
+		}, producerConcurrencyFromMetadata([]byte(`{"concurrency": {"global_limit": 10, "local_limit": 5, "partition": {"by_args": ["customer_id"], "by_kind": true}, "running": {"a": 1}}}`)))
+	})
+
+	t.Run("InvalidJSON", func(t *testing.T) {
+		t.Parallel()
+
+		require.Nil(t, producerConcurrencyFromMetadata([]byte(`{"concurrency": `)))
+		require.Nil(t, producerConcurrencyFromMetadata([]byte(`{"concurrency": "invalid"}`)))
+	})
+
+	t.Run("MissingKey", func(t *testing.T) {
+		t.Parallel()
+
+		require.Nil(t, producerConcurrencyFromMetadata([]byte(`{"other": true}`)))
+	})
+
+	t.Run("Null", func(t *testing.T) {
+		t.Parallel()
+
+		require.Nil(t, producerConcurrencyFromMetadata([]byte(`{"concurrency": null}`)))
+	})
+
+	t.Run("RunningStateOnly", func(t *testing.T) {
+		t.Parallel()
+
+		require.Nil(t, producerConcurrencyFromMetadata([]byte(`{"concurrency": {"running": {"a": 1}}}`)))
+	})
+
+	t.Run("ZeroLimits", func(t *testing.T) {
+		t.Parallel()
+
+		// A producer that reports explicit zero limits has a config with no
+		// limits, which is distinct from having no config at all.
+		require.Equal(t, &uitype.ConcurrencyConfig{}, producerConcurrencyFromMetadata([]byte(`{"concurrency": {"global_limit": 0, "local_limit": 0}}`)))
 	})
 }
 
@@ -177,9 +240,10 @@ func TestProAPIHandlerWorkflowGet(t *testing.T) {
 		}
 
 		dependencyJob := jobWithSchema(ctx, t, bundle.exec, bundle.schema, &testfactory.JobOpts{
-			FinalizedAt: ptrutil.Ptr(now.Add(-2 * time.Minute)),
+			EncodedArgs: []byte(`{"id":1970670598291982290,"max":9223372036854775807}`),
+			FinalizedAt: new(now.Add(-2 * time.Minute)),
 			Metadata:    workflowMetadata("wf_get", "collect_inputs", nil),
-			State:       ptrutil.Ptr(rivertype.JobStateCompleted),
+			State:       new(rivertype.JobStateCompleted),
 		})
 
 		waitingJob := jobWithSchema(ctx, t, bundle.exec, bundle.schema, &testfactory.JobOpts{
@@ -191,7 +255,7 @@ func TestProAPIHandlerWorkflowGet(t *testing.T) {
 					},
 				},
 			}),
-			State: ptrutil.Ptr(rivertype.JobStatePending),
+			State: new(rivertype.JobStatePending),
 		})
 
 		resp, err := apitest.InvokeHandler(ctx, endpoint.Execute, testMountOpts(t), &workflowGetRequest{ID: "wf_get"})
@@ -207,6 +271,27 @@ func TestProAPIHandlerWorkflowGet(t *testing.T) {
 
 		require.Equal(t, workflowTaskWaitReasonNone, taskByID[dependencyJob.ID].WaitReason)
 		require.Nil(t, taskByID[dependencyJob.ID].Wait)
+		expectedArgs := string(dependencyJob.EncodedArgs)
+		require.Equal(t, expectedArgs, taskByID[dependencyJob.ID].Args)
+		require.Contains(t, taskByID[dependencyJob.ID].Args, "1970670598291982290")
+		require.Contains(t, taskByID[dependencyJob.ID].Args, "9223372036854775807")
+
+		var wireResp struct {
+			Tasks []struct {
+				Args string `json:"args"`
+				ID   int64  `json:"id"`
+			} `json:"tasks"`
+		}
+		require.NoError(t, json.Unmarshal(uicommontest.MustMarshalJSON(t, resp), &wireResp))
+		var dependencyArgs string
+		for _, task := range wireResp.Tasks {
+			if task.ID == dependencyJob.ID {
+				dependencyArgs = task.Args
+				break
+			}
+		}
+		require.Equal(t, expectedArgs, dependencyArgs)
+		require.True(t, json.Valid([]byte(dependencyArgs)))
 
 		waitingTask := taskByID[waitingJob.ID]
 		require.NotNil(t, waitingTask)
@@ -269,9 +354,9 @@ func TestProAPIHandlerWorkflowListCustomSchema(t *testing.T) {
 
 	makeWorkflowJob(ctx, t, bundle.exec, bundle.schema, "active_workflow", "active_task", nil)
 	jobWithSchema(ctx, t, bundle.exec, bundle.schema, &testfactory.JobOpts{
-		FinalizedAt: ptrutil.Ptr(time.Now()),
+		FinalizedAt: new(time.Now()),
 		Metadata:    workflowMetadata("inactive_workflow", "inactive_task", nil),
-		State:       ptrutil.Ptr(rivertype.JobStateCompleted),
+		State:       new(rivertype.JobStateCompleted),
 	})
 
 	activeResp, err := apitest.InvokeHandler(ctx, endpoint.Execute, testMountOpts(t), &workflowListRequest{State: "active"})
@@ -718,19 +803,19 @@ func TestProAPIHandlerWorkflowRetry(t *testing.T) {
 		endpoint, bundle := setupEndpoint(ctx, t, NewWorkflowRetryEndpoint)
 
 		job1 := jobWithSchema(ctx, t, bundle.exec, bundle.schema, &testfactory.JobOpts{
-			FinalizedAt: ptrutil.Ptr(time.Now()),
+			FinalizedAt: new(time.Now()),
 			Metadata:    workflowMetadata("wf_all_1", "task1", nil),
-			State:       ptrutil.Ptr(rivertype.JobStateDiscarded),
+			State:       new(rivertype.JobStateDiscarded),
 		})
 		job2 := jobWithSchema(ctx, t, bundle.exec, bundle.schema, &testfactory.JobOpts{
-			FinalizedAt: ptrutil.Ptr(time.Now()),
+			FinalizedAt: new(time.Now()),
 			Metadata:    workflowMetadata("wf_all_1", "task2", nil),
-			State:       ptrutil.Ptr(rivertype.JobStateCompleted),
+			State:       new(rivertype.JobStateCompleted),
 		})
 		job3 := jobWithSchema(ctx, t, bundle.exec, bundle.schema, &testfactory.JobOpts{
-			FinalizedAt: ptrutil.Ptr(time.Now()),
+			FinalizedAt: new(time.Now()),
 			Metadata:    workflowMetadata("wf_all_1", "task3", []string{"task1", "task2"}),
-			State:       ptrutil.Ptr(rivertype.JobStateCancelled),
+			State:       new(rivertype.JobStateCancelled),
 		})
 
 		resp, err := apitest.InvokeHandler(ctx, endpoint.Execute, testMountOpts(t), &workflowRetryRequest{ID: "wf_all_1"})
@@ -747,14 +832,14 @@ func TestProAPIHandlerWorkflowRetry(t *testing.T) {
 
 		// Build jobs with specific states
 		jobCompleted := jobWithSchema(ctx, t, bundle.exec, bundle.schema, &testfactory.JobOpts{
-			FinalizedAt: ptrutil.Ptr(time.Now()),
+			FinalizedAt: new(time.Now()),
 			Metadata:    workflowMetadata("wf_failed_only", "done", nil),
-			State:       ptrutil.Ptr(rivertype.JobStateCompleted),
+			State:       new(rivertype.JobStateCompleted),
 		})
 		jobDiscarded := jobWithSchema(ctx, t, bundle.exec, bundle.schema, &testfactory.JobOpts{
-			FinalizedAt: ptrutil.Ptr(time.Now()),
+			FinalizedAt: new(time.Now()),
 			Metadata:    workflowMetadata("wf_failed_only", "failed", nil),
-			State:       ptrutil.Ptr(rivertype.JobStateDiscarded),
+			State:       new(rivertype.JobStateDiscarded),
 		})
 		_ = jobCompleted
 
@@ -772,19 +857,19 @@ func TestProAPIHandlerWorkflowRetry(t *testing.T) {
 
 		// a -> b -> c; mark a as discarded, others completed
 		jobA := jobWithSchema(ctx, t, bundle.exec, bundle.schema, &testfactory.JobOpts{
-			FinalizedAt: ptrutil.Ptr(time.Now()),
+			FinalizedAt: new(time.Now()),
 			Metadata:    workflowMetadata("wf_failed_downstream", "a", nil),
-			State:       ptrutil.Ptr(rivertype.JobStateDiscarded),
+			State:       new(rivertype.JobStateDiscarded),
 		})
 		jobB := jobWithSchema(ctx, t, bundle.exec, bundle.schema, &testfactory.JobOpts{
-			FinalizedAt: ptrutil.Ptr(time.Now()),
+			FinalizedAt: new(time.Now()),
 			Metadata:    workflowMetadata("wf_failed_downstream", "b", []string{"a"}),
-			State:       ptrutil.Ptr(rivertype.JobStateCompleted),
+			State:       new(rivertype.JobStateCompleted),
 		})
 		jobC := jobWithSchema(ctx, t, bundle.exec, bundle.schema, &testfactory.JobOpts{
-			FinalizedAt: ptrutil.Ptr(time.Now()),
+			FinalizedAt: new(time.Now()),
 			Metadata:    workflowMetadata("wf_failed_downstream", "c", []string{"b"}),
-			State:       ptrutil.Ptr(rivertype.JobStateCompleted),
+			State:       new(rivertype.JobStateCompleted),
 		})
 
 		resp, err := apitest.InvokeHandler(ctx, endpoint.Execute, testMountOpts(t), &workflowRetryRequest{ID: "wf_failed_downstream", Mode: "failed_and_downstream"})
@@ -803,10 +888,10 @@ func TestProAPIHandlerWorkflowRetry(t *testing.T) {
 		maxAttempts := 5
 		job := jobWithSchema(ctx, t, bundle.exec, bundle.schema, &testfactory.JobOpts{
 			Attempt:     &attempt,
-			FinalizedAt: ptrutil.Ptr(time.Now()),
+			FinalizedAt: new(time.Now()),
 			Metadata:    workflowMetadata("wf_reset_history", "t1", nil),
 			MaxAttempts: func() *int { v := maxAttempts; return &v }(),
-			State:       ptrutil.Ptr(rivertype.JobStateCompleted),
+			State:       new(rivertype.JobStateCompleted),
 		})
 
 		// Without resetting history, Attempt stays the same and MaxAttempts increments by 1
@@ -822,10 +907,10 @@ func TestProAPIHandlerWorkflowRetry(t *testing.T) {
 		attempt2 := 3
 		job2 := jobWithSchema(ctx, t, bundle.exec, bundle.schema, &testfactory.JobOpts{
 			Attempt:     &attempt2,
-			FinalizedAt: ptrutil.Ptr(time.Now()),
+			FinalizedAt: new(time.Now()),
 			Metadata:    workflowMetadata("wf_reset_history2", "t1", nil),
 			MaxAttempts: func() *int { v := maxAttempts; return &v }(),
-			State:       ptrutil.Ptr(rivertype.JobStateCompleted),
+			State:       new(rivertype.JobStateCompleted),
 		})
 
 		respReset, err := apitest.InvokeHandler(ctx, endpoint.Execute, testMountOpts(t), &workflowRetryRequest{ID: "wf_reset_history2", ResetHistory: true})

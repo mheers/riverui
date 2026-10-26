@@ -19,8 +19,8 @@ jobs:
     strategy:
       matrix:
         go-version:
-          - "1.25"
           - "1.26"
+          - "1.27"
         postgres-version: [18, 17, 16]
       fail-fast: false
     timeout-minutes: 5
@@ -40,10 +40,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.1
 
       - name: Setup Go ${{ matrix.go-version }}
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go-version }}
 
@@ -90,7 +90,7 @@ jobs:
     name: Go lint
     runs-on: ubuntu-latest
     env:
-      GOLANGCI_LINT_VERSION: v2.11.4
+      GOLANGCI_LINT_VERSION: v2.13.1
       GOPROXY: https://proxy.golang.org,https://u:${{ secrets.RIVERPRO_GO_MOD_CREDENTIAL }}@riverqueue.com/goproxy,direct
     permissions:
       contents: read
@@ -99,9 +99,9 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.1
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           check-latest: true
           go-version-file: "./go.mod"
@@ -127,13 +127,32 @@ jobs:
       - name: Run lint
         run: make lint
 
+  sqlc_verify:
+    name: Verify sqlc generated code
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup sqlc
+        uses: sqlc-dev/setup-sqlc@v5
+        with:
+          sqlc-version: "1.31.0"
+
+      - name: Verify sqlc generated code
+        run: |
+          echo "Make sure that all sqlc changes are checked in"
+          make verify/sqlc
+
   js_build_and_test:
     name: JS Build and Test
     runs-on: ubuntu-latest
     strategy:
       matrix:
         node-version:
-          - "24.14.1"
+          - "24.21.0"
       fail-fast: false
     timeout-minutes: 5
 
@@ -145,10 +164,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.1
 
       - name: Install Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           cache: "npm"
           cache-dependency-path: package-lock.json
@@ -170,7 +189,7 @@ jobs:
     strategy:
       matrix:
         node-version:
-          - "24.14.1"
+          - "24.21.0"
       fail-fast: false
     timeout-minutes: 5
 
@@ -179,10 +198,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.1
 
       - name: Install Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           cache: "npm"
           cache-dependency-path: package-lock.json
@@ -194,7 +213,7 @@ jobs:
 
       - name: Cache ESLint
         id: cache-eslint
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .eslintcache
           key: eslint-v1-${{ runner.os }}-${{ matrix.node-version }}-${{ hashFiles('**/package-lock.json') }}
@@ -218,20 +237,20 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6.0.3
+        uses: actions/checkout@v7.0.1
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           check-latest: true
           go-version-file: "go.mod"
 
       - name: Install Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           cache: "npm"
           cache-dependency-path: package-lock.json
-          node-version: "24.14.1"
+          node-version: "24.21.0"
 
       - name: Install dependencies
         run: npm ci

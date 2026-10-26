@@ -1,4 +1,5 @@
 import { FeaturesContext } from "@contexts/Features";
+import { StatesAndCounts } from "@services/states";
 import { JobState } from "@services/types";
 import { jobMinimalFactory } from "@test/factories/job";
 import { createFeatures } from "@test/utils/features";
@@ -19,7 +20,8 @@ import JobList from "./JobList";
 type UseSettings = typeof import("@hooks/use-settings").useSettings;
 type UseSettingsReturn = ReturnType<UseSettings>;
 
-const { mockUseSettings } = vi.hoisted(() => ({
+const { mockCompactJSONText, mockUseSettings } = vi.hoisted(() => ({
+  mockCompactJSONText: vi.fn(),
   mockUseSettings: vi.fn() as MockedFunction<UseSettings>,
 }));
 
@@ -55,13 +57,72 @@ vi.mock("@hooks/use-settings", () => ({
   useSettings: mockUseSettings,
 }));
 
+vi.mock("@utils/jsonText", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@utils/jsonText")>();
+
+  return {
+    ...actual,
+    compactJSONText: (text: string) => {
+      mockCompactJSONText(text);
+      return actual.compactJSONText(text);
+    },
+  };
+});
+
 describe("JobList", () => {
   beforeEach(() => {
+    mockCompactJSONText.mockReset();
     mockUseSettings.mockReset();
   });
 
+  it.each([
+    { accuracy: "estimated", count: 987_654n, formatted: "≈987.7K" },
+    { accuracy: "exact_cached", count: 12_345_678n, formatted: "12.3M" },
+    { accuracy: "lower_bound", count: 10_000n, formatted: "10K+" },
+  ] as const)(
+    "preserves $accuracy counts in the mobile menu",
+    async ({ accuracy, count, formatted }) => {
+      mockUseSettings.mockReturnValue(settingsMock({}));
+      const statesAndCounts: StatesAndCounts = {
+        available: { accuracy: "exact", count: 0n },
+        cancelled: { accuracy: "exact", count: 0n },
+        completed: { accuracy: "exact", count: 0n },
+        discarded: { accuracy: "exact", count: 0n },
+        pending: { accuracy: "exact", count: 0n },
+        retryable: { accuracy: "exact", count: 0n },
+        running: { accuracy, count },
+        scheduled: { accuracy: "exact", count: 0n },
+      };
+      render(
+        <FeaturesContext.Provider value={{ features: createFeatures() }}>
+          <JobList
+            cancelJobs={vi.fn()}
+            canShowFewer={false}
+            canShowMore={false}
+            deleteJobs={vi.fn()}
+            jobs={[]}
+            retryJobs={vi.fn()}
+            setJobRefetchesPaused={vi.fn()}
+            showFewer={vi.fn()}
+            showMore={vi.fn()}
+            state={JobState.Running}
+            statesAndCounts={statesAndCounts}
+          />
+        </FeaturesContext.Provider>,
+      );
+
+      const button = screen.getByRole("button", { name: "Job state" });
+      expect(within(button).getByText(formatted)).toHaveAttribute("title");
+      await userEvent.click(button);
+      const menu = await screen.findByRole("menu");
+      expect(within(menu).getByText(formatted)).toHaveAttribute("title");
+    },
+  );
+
   it("shows job args by default", () => {
-    const job = jobMinimalFactory.build();
+    const job = jobMinimalFactory.build({
+      argsRaw: '{"z":2,"id":1970670598291982290,"a":1}',
+    });
     const features = createFeatures({
       jobListHideArgsByDefault: false,
     });
@@ -87,7 +148,9 @@ describe("JobList", () => {
       </FeaturesContext.Provider>,
     );
 
-    expect(screen.getByText(JSON.stringify(job.args))).toBeInTheDocument();
+    expect(
+      screen.getByText('{"a":1,"id":1970670598291982290,"z":2}'),
+    ).toBeInTheDocument();
   });
 
   it("hides job args when jobListHideArgsByDefault is true", () => {
@@ -117,9 +180,8 @@ describe("JobList", () => {
       </FeaturesContext.Provider>,
     );
 
-    expect(
-      screen.queryByText(JSON.stringify(job.args)),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(job.argsRaw)).not.toBeInTheDocument();
+    expect(mockCompactJSONText).not.toHaveBeenCalled();
   });
 
   it("shows job args when user overrides default hide setting", () => {
@@ -150,7 +212,7 @@ describe("JobList", () => {
     );
 
     // Even though server default is to hide, user setting should make them visible
-    expect(screen.getByText(JSON.stringify(job.args))).toBeInTheDocument();
+    expect(screen.getByText(job.argsRaw)).toBeInTheDocument();
   });
 
   it("hides job args when user overrides default show setting", () => {
@@ -181,9 +243,7 @@ describe("JobList", () => {
     );
 
     // Even though server default is to show, user setting should hide them
-    expect(
-      screen.queryByText(JSON.stringify(job.args)),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(job.argsRaw)).not.toBeInTheDocument();
   });
 
   it("requires confirmation before deleting selected jobs", async () => {

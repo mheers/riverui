@@ -51,13 +51,6 @@ vi.mock("./api", () => ({
   },
 }));
 
-// Add type declarations for test functions
-declare module "vitest" {
-  interface Assertion<T> {
-    toBeInTheDocument(): T;
-  }
-}
-
 describe("JobSearch", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -85,6 +78,78 @@ describe("JobSearch", () => {
       expect(searchInput).toHaveAttribute("data-1p-ignore");
       expect(searchInput).toHaveAttribute("data-form-type", "other");
       expect(searchInput).toHaveAttribute("autoComplete", "off");
+    });
+
+    it("preserves ongoing typing when a parent acknowledges an earlier filter change", async () => {
+      const onFiltersChange = vi.fn();
+      const { rerender } = render(
+        <JobSearch onFiltersChange={onFiltersChange} syncInitialFilters />,
+      );
+      const input = screen.getByTestId("job-search-input");
+      fireEvent.change(input, { target: { value: "kind:batch" } });
+      await waitFor(() =>
+        expect(onFiltersChange).toHaveBeenCalledWith([
+          expect.objectContaining({ values: ["batch"] }),
+        ]),
+      );
+      fireEvent.change(input, { target: { value: "kind:batch queue:ma" } });
+      rerender(
+        <JobSearch
+          initialFilters={[
+            {
+              id: "kind",
+              match: "kind:",
+              typeId: FilterTypeId.KIND,
+              values: ["batch"],
+            },
+          ]}
+          onFiltersChange={onFiltersChange}
+          syncInitialFilters
+        />,
+      );
+      expect(input).toHaveValue("kind:batch queue:ma");
+    });
+
+    it("keeps initial filters uncontrolled unless synchronization is enabled", () => {
+      const { rerender } = render(<JobSearch />);
+      const input = screen.getByTestId("job-search-input");
+      fireEvent.change(input, { target: { value: "kind:batch" } });
+      rerender(
+        <JobSearch
+          initialFilters={[
+            {
+              id: "queue",
+              match: "queue:",
+              typeId: FilterTypeId.QUEUE,
+              values: ["mail"],
+            },
+          ]}
+        />,
+      );
+      expect(input).toHaveValue("kind:batch");
+    });
+
+    it("aborts a suggestion request when a newer one replaces it", async () => {
+      const signals: AbortSignal[] = [];
+      const fetchSuggestions = vi.fn(
+        (
+          _type: FilterTypeId,
+          _query: string,
+          _selected: string[],
+          signal?: AbortSignal,
+        ) => {
+          if (signal) signals.push(signal);
+          return new Promise<string[]>(() => {});
+        },
+      );
+      render(<JobSearch fetchSuggestions={fetchSuggestions} />);
+      const input = screen.getByTestId("job-search-input");
+      fireEvent.change(input, { target: { value: "kind:b" } });
+      await waitFor(() => expect(signals).toHaveLength(1));
+      fireEvent.change(input, { target: { value: "kind:ba" } });
+      await waitFor(() => expect(signals).toHaveLength(2));
+      expect(signals[0].aborted).toBe(true);
+      expect(signals[1].aborted).toBe(false);
     });
 
     it("notifies parent of filter changes", async () => {

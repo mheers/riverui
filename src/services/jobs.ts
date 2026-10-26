@@ -17,13 +17,15 @@ export type AttemptError = {
 };
 
 export type Job = {
-  [Key in keyof JobFromAPI as SnakeToCamelCase<Key>]: Key extends
+  [Key in keyof Omit<JobFromAPI, "args"> as SnakeToCamelCase<Key>]: Key extends
     | StringEndingWithUnderscoreAt
     | undefined
     ? Date
     : JobFromAPI[Key] extends AttemptErrorFromAPI[]
       ? AttemptError[]
       : JobFromAPI[Key];
+} & {
+  argsRaw: string;
 };
 
 export type JobFromAPI = {
@@ -43,18 +45,25 @@ export type JobLogs = {
 };
 
 export type JobMinimal = {
-  [Key in keyof JobMinimalFromAPI as SnakeToCamelCase<Key>]: Key extends
+  [Key in keyof Omit<
+    JobMinimalFromAPI,
+    "args"
+  > as SnakeToCamelCase<Key>]: Key extends
     | StringEndingWithUnderscoreAt
     | undefined
     ? Date
     : JobMinimalFromAPI[Key];
+} & {
+  argsRaw: string;
 };
 
 // Represents a Job as received from the API. This just like Job, except with
 // string dates instead of Date objects and keys as snake_case instead of
 // camelCase.
 export type JobMinimalFromAPI = {
-  args: object;
+  // JSON text as returned by River. Keep this unparsed to preserve large
+  // integer values exactly for display and copy.
+  args: string;
   attempt: number;
   attempted_at?: string;
   attempted_by: string[];
@@ -100,7 +109,7 @@ type RiverJobLogEntry = {
 export const apiJobMinimalToJobMinimal = (
   job: JobMinimalFromAPI,
 ): JobMinimal => ({
-  args: job.args,
+  argsRaw: job.args,
   attempt: job.attempt,
   attemptedAt: job.attempted_at ? new Date(job.attempted_at) : undefined,
   attemptedBy: job.attempted_by,
@@ -189,6 +198,7 @@ export type ListJobsKey = [
     queues: string[] | undefined;
     sortOrder: "asc" | "desc" | undefined;
     state: JobState | undefined;
+    tags: string[] | undefined;
   },
 ];
 
@@ -202,7 +212,11 @@ type ListJobsFilters = {
   queues?: string[];
   sortOrder?: "asc" | "desc";
   state?: JobState;
+  tags?: string[];
 };
+
+// Matches every job list query, for invalidation.
+export const listJobsKeyPrefix = ["listJobs"] as const;
 
 export const listJobsKey = (args: ListJobsFilters): ListJobsKey => {
   return [
@@ -217,6 +231,7 @@ export const listJobsKey = (args: ListJobsFilters): ListJobsKey => {
       queues: args.queues,
       sortOrder: args.sortOrder,
       state: args.state,
+      tags: args.tags,
     },
   ];
 };
@@ -237,6 +252,7 @@ export const listJobs: QueryFunction<JobMinimal[], ListJobsKey> = async ({
       queues,
       sortOrder,
       state,
+      tags,
     },
   ] = queryKey;
 
@@ -252,6 +268,7 @@ export const listJobs: QueryFunction<JobMinimal[], ListJobsKey> = async ({
   if (queues?.length) params.queues = queues;
   if (sortOrder) params.sort_order = sortOrder;
   if (state) params.state = state;
+  if (tags?.length) params.tags = tags;
 
   // Convert to URLSearchParams, handling arrays correctly
   const query = new URLSearchParams();

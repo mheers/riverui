@@ -1,13 +1,7 @@
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react-swc";
-import path from "node:path";
 import { defineConfig } from "vite";
-
-const dagreCjsPath = path.resolve(
-  process.cwd(),
-  "node_modules/@dagrejs/dagre/dist/dagre.cjs.js",
-);
 
 // https://vitejs.dev/config/
 export default defineConfig({
@@ -50,17 +44,6 @@ export default defineConfig({
     }),
   ],
   resolve: {
-    alias: [
-      { find: "@dagrejs/dagre", replacement: dagreCjsPath },
-      {
-        find: /^@\/(.*)/,
-        replacement: path.resolve(process.cwd(), "src/$1"),
-      },
-      {
-        find: /^@(components|contexts|hooks|providers|routes|services|stores|test|utils)(\/.*)?$/,
-        replacement: path.resolve(process.cwd(), "src/$1$2"),
-      },
-    ],
     tsconfigPaths: true,
   },
 });

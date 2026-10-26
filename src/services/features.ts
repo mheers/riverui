@@ -5,10 +5,9 @@ import { API } from "@utils/api";
 import { SnakeToCamelCase } from "./types";
 
 export type Features = {
-  [Key in keyof Omit<
-    FeaturesFromAPI,
-    "extensions"
-  > as SnakeToCamelCase<Key>]: FeaturesFromAPI[Key];
+  [
+    Key in keyof Omit<FeaturesFromAPI, "extensions"> as SnakeToCamelCase<Key>
+  ]: FeaturesFromAPI[Key];
 } & KnownExtensions;
 
 type FeaturesFromAPI = {
@@ -17,6 +16,7 @@ type FeaturesFromAPI = {
 };
 
 const KNOWN_EXTENSIONS = [
+  "dead_letter_jobs",
   "durable_periodic_jobs",
   "producer_queries",
   "workflow_queries",
@@ -26,7 +26,9 @@ const KNOWN_EXTENSIONS = [
 type KnownExtensionKey = (typeof KNOWN_EXTENSIONS)[number];
 
 type KnownExtensions = {
-  [Key in keyof KnownExtensionsFromAPI as SnakeToCamelCase<Key>]: KnownExtensionsFromAPI[Key];
+  [
+    Key in keyof KnownExtensionsFromAPI as SnakeToCamelCase<Key>
+  ]: KnownExtensionsFromAPI[Key];
 };
 
 // Generate types from the single source of truth

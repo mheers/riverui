@@ -1,11 +1,12 @@
 import { Badge } from "@components/Badge";
-import { Button } from "@components/Button";
 import ButtonForGroup from "@components/ButtonForGroup";
 import ConfirmationDialog from "@components/ConfirmationDialog";
 import { CustomCheckbox } from "@components/CustomCheckbox";
 import { Dropdown, DropdownItem, DropdownMenu } from "@components/Dropdown";
 import { Filter, JobSearch } from "@components/job-search/JobSearch";
 import { JobStateFilters } from "@components/JobStateFilters";
+import ListEmptyState from "@components/ListEmptyState";
+import ListPagination from "@components/ListPagination";
 import RelativeTimeFormatter from "@components/RelativeTimeFormatter";
 import TopNav from "@components/TopNav";
 import { useFeatures } from "@contexts/Features.hook";
@@ -26,13 +27,15 @@ import { useSettings } from "@hooks/use-settings";
 import { useShiftSelected } from "@hooks/use-shift-selected";
 import { type Features } from "@services/features";
 import { JobMinimal } from "@services/jobs";
-import { StatesAndCounts } from "@services/states";
+import { StateCount, StatesAndCounts } from "@services/states";
 import { JobState } from "@services/types";
 import { Link } from "@tanstack/react-router";
 import {
   JobStateFilterItem,
   jobStateFilterItems,
 } from "@utils/jobStateFilterItems";
+import { compactJSONText } from "@utils/jsonText";
+import { formatStateCount, stateCountTitle } from "@utils/stateCount";
 import { classNames } from "@utils/style";
 import React, {
   FormEvent,
@@ -86,6 +89,14 @@ type JobListItemProps = {
   ) => void;
 };
 
+const JobArgsPreview = ({ argsRaw }: { argsRaw: string }) => {
+  const argsPreview = useMemo(() => compactJSONText(argsRaw), [argsRaw]);
+
+  return (
+    <p className="grow truncate font-mono whitespace-nowrap">{argsPreview}</p>
+  );
+};
+
 const JobListItem = ({
   checked,
   hideArgs,
@@ -136,11 +147,7 @@ const JobListItem = ({
           <svg className="size-0.5 flex-none fill-gray-400" viewBox="0 0 2 2">
             <circle cx={1} cy={1} r={1} />
           </svg>
-          {showArgs && (
-            <p className="grow truncate font-mono whitespace-nowrap">
-              {JSON.stringify(job.args)}
-            </p>
-          )}
+          {showArgs && <JobArgsPreview argsRaw={job.argsRaw} />}
           <Badge className="flex-none font-mono text-xs" color="zinc">
             {job.queue}
           </Badge>
@@ -149,35 +156,6 @@ const JobListItem = ({
     </li>
   );
 };
-
-type EmptySetIconProps = React.ComponentProps<"svg">;
-
-const EmptySetIcon = (props: EmptySetIconProps) => (
-  <svg
-    fill="currentColor"
-    height="200"
-    stroke="currentColor"
-    viewBox="0 0 200 200"
-    width="200"
-    xmlns="http://www.w3.org/2000/svg"
-    {...props}
-  >
-    <circle cx="100" cy="100" fill="none" r="60" strokeWidth="10" />
-    <line strokeWidth="10" x1="40" x2="160" y1="40" y2="160" />
-  </svg>
-);
-
-const EmptyState = () => (
-  <div className="flex h-full flex-col items-center justify-center py-16">
-    <EmptySetIcon className="mx-auto size-12 text-gray-400" />
-    <h3 className="mt-2 text-sm font-semibold text-gray-900 dark:text-gray-100">
-      No jobs found
-    </h3>
-    <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-      Try adjusting your filters to find what you're looking for.
-    </p>
-  </div>
-);
 
 export type JobRowsProps = {
   cancelJobs: (jobIDs: bigint[]) => void;
@@ -622,7 +600,10 @@ const JobRows = ({
       </div>
       {jobs.length === 0 ? (
         <div className="grow">
-          <EmptyState />
+          <ListEmptyState
+            description="Try adjusting your filters to find what you're looking for."
+            title="No jobs found"
+          />
         </div>
       ) : (
         <>
@@ -640,27 +621,12 @@ const JobRows = ({
               />
             ))}
           </ul>
-          <nav
-            aria-label="Pagination"
-            className="sticky inset-x-0 bottom-0 flex items-center justify-center border-t border-black/5 bg-white py-3 dark:border-white/5 dark:bg-slate-900"
-          >
-            <Button
-              className="mx-2"
-              color="light"
-              disabled={!canShowFewer}
-              onClick={() => showFewer()}
-            >
-              Fewer
-            </Button>
-            <Button
-              className="mx-2"
-              color="light"
-              disabled={!canShowMore}
-              onClick={() => showMore()}
-            >
-              More
-            </Button>
-          </nav>
+          <ListPagination
+            canShowFewer={canShowFewer}
+            canShowMore={canShowMore}
+            showFewer={showFewer}
+            showMore={showMore}
+          />
         </>
       )}
     </div>
@@ -700,11 +666,11 @@ const JobList = (props: JobListProps) => {
       : features.jobListHideArgsByDefault;
 
   const stateFormatted = state.charAt(0).toUpperCase() + state.slice(1);
-  const jobsInState = useMemo(() => {
+  const jobsInState = useMemo<StateCount>(() => {
     if (!statesAndCounts) {
-      return 0;
+      return { accuracy: "exact", count: 0n };
     }
-    return statesAndCounts[state] || 0;
+    return statesAndCounts[state];
   }, [state, statesAndCounts]);
 
   const filterItems = useMemo(
@@ -721,7 +687,7 @@ const JobList = (props: JobListProps) => {
           </h1>
           <Dropdown>
             <HeadlessMenuButton
-              aria-label="Account options"
+              aria-label="Job state"
               className="flex items-center gap-3 rounded-xl border border-transparent px-2 py-1 text-slate-700 data-active:border-slate-200 data-hover:border-slate-200 dark:text-slate-300 dark:data-active:border-slate-700 dark:data-hover:border-slate-700"
             >
               <span className="flex min-w-36 flex-1 items-center justify-between text-left">
@@ -729,10 +695,10 @@ const JobList = (props: JobListProps) => {
                   {stateFormatted}
                 </span>
                 <span
-                  aria-hidden="true"
                   className="ml-3 block w-9 min-w-max rounded-full bg-white px-2.5 py-0.5 text-center text-xs leading-5 font-medium whitespace-nowrap text-gray-600 ring-1 ring-gray-200 ring-inset dark:bg-gray-900 dark:text-white dark:ring-gray-700"
+                  title={stateCountTitle(jobsInState)}
                 >
-                  {jobsInState.toString()}
+                  {formatStateCount(jobsInState)}
                 </span>
               </span>
               <ChevronUpDownIcon className="mr-1 ml-auto size-4 shrink-0 stroke-zinc-400" />
@@ -755,8 +721,11 @@ const JobList = (props: JobListProps) => {
                   to="/jobs"
                 >
                   <span className="">{item.name}</span>
-                  <span className="col-span-4 ml-auto w-9 min-w-max rounded-full bg-white px-2.5 py-0.5 text-center text-xs leading-5 font-medium whitespace-nowrap text-gray-600 ring-1 ring-gray-200 ring-inset dark:bg-gray-900 dark:text-white dark:ring-gray-700">
-                    {item.count.toString()}
+                  <span
+                    className="col-span-4 ml-auto w-9 min-w-max rounded-full bg-white px-2.5 py-0.5 text-center text-xs leading-5 font-medium whitespace-nowrap text-gray-600 ring-1 ring-gray-200 ring-inset dark:bg-gray-900 dark:text-white dark:ring-gray-700"
+                    title={stateCountTitle(item)}
+                  >
+                    {formatStateCount(item)}
                   </span>
                 </DropdownItem>
               ))}

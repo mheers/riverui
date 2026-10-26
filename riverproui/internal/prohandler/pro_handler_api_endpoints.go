@@ -175,20 +175,10 @@ func (a *producerListEndpoint[TTx]) Execute(ctx context.Context, req *producerLi
 }
 
 func internalProducerToSerializableProducer(internal *riverprodriver.ProducerListByQueueResult) *uitype.RiverProducer {
-	var concurrency *uitype.ConcurrencyConfig
-	if len(internal.Producer.Metadata) > 0 {
-		var metadata struct {
-			Concurrency uitype.ConcurrencyConfig `json:"concurrency"`
-		}
-		if err := json.Unmarshal(internal.Producer.Metadata, &metadata); err == nil {
-			concurrency = &metadata.Concurrency
-		}
-	}
-
 	return &uitype.RiverProducer{
 		ID:          internal.Producer.ID,
 		ClientID:    internal.Producer.ClientID,
-		Concurrency: concurrency,
+		Concurrency: producerConcurrencyFromMetadata(internal.Producer.Metadata),
 		CreatedAt:   internal.Producer.CreatedAt,
 		MaxWorkers:  int(internal.Producer.MaxWorkers),
 		PausedAt:    internal.Producer.PausedAt,
@@ -196,6 +186,41 @@ func internalProducerToSerializableProducer(internal *riverprodriver.ProducerLis
 		Running:     internal.Running,
 		UpdatedAt:   internal.Producer.UpdatedAt,
 	}
+}
+
+// producerConcurrencyFromMetadata extracts the concurrency config a producer
+// reports in its metadata. A missing key, `null`, or an object without any
+// config fields means the producer has no concurrency config, so it returns
+// nil instead of a zero config. Producers also store limiter state like
+// `running` alongside the config, which doesn't count as config on its own.
+func producerConcurrencyFromMetadata(metadata []byte) *uitype.ConcurrencyConfig {
+	if len(metadata) == 0 {
+		return nil
+	}
+
+	var parsed struct {
+		Concurrency json.RawMessage `json:"concurrency"`
+	}
+	if err := json.Unmarshal(metadata, &parsed); err != nil {
+		return nil
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(parsed.Concurrency, &fields); err != nil {
+		return nil
+	}
+	_, hasGlobalLimit := fields["global_limit"]
+	_, hasLocalLimit := fields["local_limit"]
+	_, hasPartition := fields["partition"]
+	if !hasGlobalLimit && !hasLocalLimit && !hasPartition {
+		return nil
+	}
+
+	var concurrency uitype.ConcurrencyConfig
+	if err := json.Unmarshal(parsed.Concurrency, &concurrency); err != nil {
+		return nil
+	}
+	return &concurrency
 }
 
 //
@@ -445,18 +470,15 @@ func (a *workflowTaskSignalsEndpoint[TTx]) Execute(ctx context.Context, req *wor
 
 	result, err := workflow.Signals().ListForTask(ctx, req.TaskName, params)
 	if err != nil {
-		var signalKeyUndeclaredErr *riverworkflow.SignalKeyUndeclaredError
-		if errors.As(err, &signalKeyUndeclaredErr) {
+		if signalKeyUndeclaredErr, ok := errors.AsType[*riverworkflow.SignalKeyUndeclaredError](err); ok {
 			return nil, apierror.NewBadRequestf("%s.", signalKeyUndeclaredErr)
 		}
 
-		var signalTaskDeclaresNoSignalKeysErr *riverworkflow.SignalTaskDeclaresNoSignalKeysError
-		if errors.As(err, &signalTaskDeclaresNoSignalKeysErr) {
+		if signalTaskDeclaresNoSignalKeysErr, ok := errors.AsType[*riverworkflow.SignalTaskDeclaresNoSignalKeysError](err); ok {
 			return nil, apierror.NewBadRequestf("%s.", signalTaskDeclaresNoSignalKeysErr)
 		}
 
-		var signalUnknownTaskErr *riverworkflow.SignalUnknownTaskError
-		if errors.As(err, &signalUnknownTaskErr) {
+		if signalUnknownTaskErr, ok := errors.AsType[*riverworkflow.SignalUnknownTaskError](err); ok {
 			return nil, apierror.NewNotFoundf("%s.", signalUnknownTaskErr)
 		}
 
@@ -654,8 +676,7 @@ func (a *workflowTaskWaitDiagnosticsEndpoint[TTx]) Execute(ctx context.Context, 
 
 	result, err := workflow.WaitDiagnostics(ctx, req.TaskName, nil)
 	if err != nil {
-		var signalUnknownTaskErr *riverworkflow.SignalUnknownTaskError
-		if errors.As(err, &signalUnknownTaskErr) {
+		if signalUnknownTaskErr, ok := errors.AsType[*riverworkflow.SignalUnknownTaskError](err); ok {
 			return nil, apierror.NewNotFoundf("%s.", signalUnknownTaskErr)
 		}
 
@@ -706,7 +727,7 @@ func (req *workflowListRequest) ExtractRaw(r *http.Request) error {
 	}
 
 	if state := r.URL.Query().Get("state"); state != "" {
-		req.State = (state)
+		req.State = state
 	}
 
 	return nil
@@ -828,20 +849,20 @@ func (a *workflowRetryEndpoint[TTx]) Execute(ctx context.Context, req *workflowR
 }
 
 type riverJobMinimal struct {
-	ID          int64           `json:"id"`
-	Args        json.RawMessage `json:"args"`
-	Attempt     int             `json:"attempt"`
-	AttemptedAt *time.Time      `json:"attempted_at"`
-	AttemptedBy []string        `json:"attempted_by"`
-	CreatedAt   time.Time       `json:"created_at"`
-	FinalizedAt *time.Time      `json:"finalized_at"`
-	Kind        string          `json:"kind"`
-	MaxAttempts int             `json:"max_attempts"`
-	Priority    int             `json:"priority"`
-	Queue       string          `json:"queue"`
-	ScheduledAt time.Time       `json:"scheduled_at"`
-	State       string          `json:"state"`
-	Tags        []string        `json:"tags"`
+	ID          int64      `json:"id"`
+	Args        string     `json:"args"`
+	Attempt     int        `json:"attempt"`
+	AttemptedAt *time.Time `json:"attempted_at"`
+	AttemptedBy []string   `json:"attempted_by"`
+	CreatedAt   time.Time  `json:"created_at"`
+	FinalizedAt *time.Time `json:"finalized_at"`
+	Kind        string     `json:"kind"`
+	MaxAttempts int        `json:"max_attempts"`
+	Priority    int        `json:"priority"`
+	Queue       string     `json:"queue"`
+	ScheduledAt time.Time  `json:"scheduled_at"`
+	State       string     `json:"state"`
+	Tags        []string   `json:"tags"`
 }
 
 func internalJobToJobMinimal(internal *rivertype.JobRow) *riverJobMinimal {
@@ -852,7 +873,7 @@ func internalJobToJobMinimal(internal *rivertype.JobRow) *riverJobMinimal {
 
 	return &riverJobMinimal{
 		ID:          internal.ID,
-		Args:        internal.EncodedArgs,
+		Args:        string(internal.EncodedArgs),
 		Attempt:     internal.Attempt,
 		AttemptedAt: internal.AttemptedAt,
 		AttemptedBy: attemptedBy,

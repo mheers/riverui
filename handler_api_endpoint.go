@@ -25,7 +25,11 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"riverqueue.com/riverui/internal/apibundle"
+	"riverqueue.com/riverui/internal/buildinfo"
 	"riverqueue.com/riverui/internal/querycacher"
+	"riverqueue.com/riverui/internal/riveruidriver"
+	"riverqueue.com/riverui/internal/riveruidriver/riveruipostgres"
+	"riverqueue.com/riverui/internal/riveruidriver/riveruisqlite"
 )
 
 type listResponse[T any] struct {
@@ -426,6 +430,7 @@ type jobListRequest struct {
 	Queues        []string            `json:"-" validate:"omitempty,max=100"`                                                                           // from ExtractRaw
 	SortOrder     *string             `json:"-" validate:"omitempty,oneof=asc desc"`                                                                    // from ExtractRaw
 	State         *rivertype.JobState `json:"-" validate:"omitempty,oneof=available cancelled completed discarded pending retryable running scheduled"` // from ExtractRaw
+	Tags          []string            `json:"-" validate:"omitempty,max=100"`                                                                           // from ExtractRaw
 }
 
 func (req *jobListRequest) ExtractRaw(r *http.Request) error {
@@ -490,6 +495,10 @@ func (req *jobListRequest) ExtractRaw(r *http.Request) error {
 		req.State = (*rivertype.JobState)(&state)
 	}
 
+	if tags := r.URL.Query()["tags"]; len(tags) > 0 {
+		req.Tags = tags
+	}
+
 	return nil
 }
 
@@ -513,6 +522,10 @@ func (a *jobListEndpoint[TTx]) Execute(ctx context.Context, req *jobListRequest)
 
 		if len(req.Queues) > 0 {
 			params = params.Queues(req.Queues...)
+		}
+
+		if len(req.Tags) > 0 {
+			params = params.TagsAny(req.Tags...)
 		}
 
 		// Determine sort direction: use explicit request value, or fall back
@@ -865,6 +878,15 @@ func (req *queueUpdateRequest) ExtractRaw(r *http.Request) error {
 }
 
 func (a *queueUpdateEndpoint[TTx]) Execute(ctx context.Context, req *queueUpdateRequest) (*RiverQueue, error) {
+	if concurrency := req.Concurrency.Value; concurrency != nil {
+		if concurrency.GlobalLimit < 0 {
+			return nil, apierror.NewBadRequestf("Invalid `global_limit` %d: must be 0 (no limit) or greater.", concurrency.GlobalLimit)
+		}
+		if concurrency.LocalLimit < 0 {
+			return nil, apierror.NewBadRequestf("Invalid `local_limit` %d: must be 0 (no limit) or greater.", concurrency.LocalLimit)
+		}
+	}
+
 	return dbutil.WithTxV(ctx, a.DB, func(ctx context.Context, execTx riverdriver.ExecutorTx) (*RiverQueue, error) {
 		tx := a.Driver.UnwrapTx(execTx)
 
@@ -918,24 +940,51 @@ func (a *queueUpdateEndpoint[TTx]) Execute(ctx context.Context, req *queueUpdate
 
 type stateAndCountGetEndpoint[TTx any] struct {
 	apibundle.APIBundle[TTx]
-	apiendpoint.Endpoint[jobCancelRequest, stateAndCountGetResponse]
+	apiendpoint.Endpoint[stateAndCountGetRequest, stateAndCountGetResponse]
 
-	queryCacheSkipThreshold int // constant normally, but settable for testing
-	queryCacher             *querycacher.QueryCacher[map[rivertype.JobState]int]
+	boundedQueryCacher *querycacher.QueryCacher[stateCountSnapshot]
+	countMax           int
+	estimateCounts     func(ctx context.Context, states []rivertype.JobState) (map[rivertype.JobState]stateCountEstimate, error)
+	exactQueryCacher   *querycacher.QueryCacher[stateCountSnapshot]
+	driver             riveruidriver.Driver
 }
 
-func newStateAndCountGetEndpoint[TTx any](bundle apibundle.APIBundle[TTx]) *stateAndCountGetEndpoint[TTx] {
-	runQuery := func(ctx context.Context) (map[rivertype.JobState]int, error) {
-		return dbutil.WithTxV(ctx, bundle.DB, func(ctx context.Context, execTx riverdriver.ExecutorTx) (map[rivertype.JobState]int, error) {
-			tx := bundle.Driver.UnwrapTx(execTx)
+const (
+	stateAndCountDefaultMax = 10_000
+	stateCountBoundedMaxAge = 30 * time.Second
 
-			return bundle.Driver.UnwrapExecutor(tx).JobCountByAllStates(ctx, &riverdriver.JobCountByAllStatesParams{Schema: bundle.Client.Schema()})
-		})
+	// Two missed maximum-interval refreshes make an estimate preferable to an
+	// increasingly misleading exact snapshot.
+	stateCountExactMaxAge         = 30 * time.Minute
+	stateCountExactRefreshMin     = 30 * time.Second
+	stateCountExactRefreshMax     = 15 * time.Minute
+	stateCountExactRefreshCostMul = 50
+)
+
+func newStateAndCountGetEndpoint[TTx any](bundle apibundle.APIBundle[TTx]) *stateAndCountGetEndpoint[TTx] {
+	endpoint := &stateAndCountGetEndpoint[TTx]{
+		APIBundle: bundle,
+		countMax:  stateAndCountDefaultMax,
+		driver:    newRiverUIDriver(bundle.Driver.DatabaseName()),
 	}
-	return &stateAndCountGetEndpoint[TTx]{
-		APIBundle:               bundle,
-		queryCacheSkipThreshold: 1_000_000,
-		queryCacher:             querycacher.NewQueryCacher(bundle.Archetype, runQuery),
+	endpoint.boundedQueryCacher = querycacher.NewQueryCacher(bundle.Archetype, endpoint.queryBoundedCounts)
+	endpoint.exactQueryCacher = querycacher.NewQueryCacherWithOpts(
+		bundle.Archetype,
+		endpoint.queryExactCounts,
+		&querycacher.QueryCacherOpts{NextTickPeriod: stateCountExactRefreshPeriod},
+	)
+	endpoint.estimateCounts = endpoint.queryEstimatedCounts
+	return endpoint
+}
+
+func newRiverUIDriver(databaseName string) riveruidriver.Driver {
+	switch databaseName {
+	case riverdriver.DatabaseNamePostgres:
+		return riveruipostgres.New()
+	case riverdriver.DatabaseNameSQLite:
+		return riveruisqlite.New()
+	default:
+		panic(fmt.Sprintf("unsupported River UI database %q", databaseName))
 	}
 }
 
@@ -947,61 +996,228 @@ func (*stateAndCountGetEndpoint[TTx]) Meta() *apiendpoint.EndpointMeta {
 }
 
 func (a *stateAndCountGetEndpoint[TTx]) SubServices() []startstop.Service {
-	return []startstop.Service{a.queryCacher}
+	return []startstop.Service{a.boundedQueryCacher, a.exactQueryCacher}
 }
 
 type stateAndCountGetRequest struct{}
 
-type stateAndCountGetResponse struct {
-	Available int `json:"available"`
-	Cancelled int `json:"cancelled"`
-	Completed int `json:"completed"`
-	Discarded int `json:"discarded"`
-	Pending   int `json:"pending"`
-	Retryable int `json:"retryable"`
-	Running   int `json:"running"`
-	Scheduled int `json:"scheduled"`
+type stateCountAccuracy string
+
+const (
+	stateCountAccuracyEstimated   stateCountAccuracy = "estimated"    // uses database planner/statistics estimate
+	stateCountAccuracyExact       stateCountAccuracy = "exact"        // exact
+	stateCountAccuracyExactCached stateCountAccuracy = "exact_cached" // exact (cached)
+	stateCountAccuracyLowerBound  stateCountAccuracy = "lower_bound"  // constrained to stateAndCountDefaultMax
+)
+
+type stateCountResponse struct {
+	Accuracy   stateCountAccuracy `json:"accuracy"`
+	Count      int                `json:"count"`
+	ObservedAt *time.Time         `json:"observed_at,omitempty"`
 }
 
+type stateAndCountGetResponse struct {
+	Available stateCountResponse `json:"available"`
+	Cancelled stateCountResponse `json:"cancelled"`
+	Completed stateCountResponse `json:"completed"`
+	Discarded stateCountResponse `json:"discarded"`
+	Pending   stateCountResponse `json:"pending"`
+	Retryable stateCountResponse `json:"retryable"`
+	Running   stateCountResponse `json:"running"`
+	Scheduled stateCountResponse `json:"scheduled"`
+}
+
+// Execute resolves every state's count from the cheapest sufficiently useful
+// source. A bounded index scan gives fresh exact values for small states. Large
+// states prefer a recent exact snapshot refreshed adaptively in the background,
+// then a database planner/statistics estimate, and finally the bound proven by the index
+// scan. Full exact scans are never part of request latency.
 func (a *stateAndCountGetEndpoint[TTx]) Execute(ctx context.Context, _ *stateAndCountGetRequest) (*stateAndCountGetResponse, error) {
-	// Counts the total number of jobs in a state and count result.
-	totalJobs := func(stateAndCountRes map[rivertype.JobState]int) int {
-		var totalJobs int
-		for _, count := range stateAndCountRes {
-			totalJobs += count
+	countsAreExact := func(snapshot stateCountSnapshot) bool {
+		for _, count := range snapshot.Counts {
+			if count > a.countMax {
+				return false
+			}
 		}
-		return totalJobs
+		return true
 	}
 
-	// Counting jobs can be an expensive operation given a large table, so in
-	// the presence of such, prefer to use a result that's cached periodically
-	// instead of querying inline with the API request. In case we don't have a
-	// cached result yet or there's a relatively small number of job rows, run
-	// the query directly (in the case of the latter so we present the freshest
-	// possible information).
-	stateAndCountRes, ok := a.queryCacher.CachedRes()
-	if !ok || totalJobs(stateAndCountRes) < a.queryCacheSkipThreshold {
+	// Prefer fresh counts while every state is below the cap. Once any state is
+	// capped, serve the periodically refreshed result to collapse queries from
+	// multiple UI clients. Both paths use the same bounded query.
+	boundedSnapshot, ok := a.boundedQueryCacher.CachedRes()
+	boundedAccuracy := stateCountAccuracyExactCached
+	if !ok || countsAreExact(boundedSnapshot) || time.Since(boundedSnapshot.ObservedAt) > stateCountBoundedMaxAge {
 		var err error
-		stateAndCountRes, err = dbutil.WithTxV(ctx, a.DB, func(ctx context.Context, execTx riverdriver.ExecutorTx) (map[rivertype.JobState]int, error) {
-			tx := a.Driver.UnwrapTx(execTx)
-
-			return a.Driver.UnwrapExecutor(tx).JobCountByAllStates(ctx, &riverdriver.JobCountByAllStatesParams{Schema: a.Client.Schema()})
-		})
+		// Populate the cache on cold start and stop serving old snapshots when
+		// background refreshes fail. This query is bounded even on large tables.
+		boundedSnapshot, err = a.boundedQueryCacher.RunQuery(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("error getting states and counts: %w", err)
 		}
+		boundedAccuracy = stateCountAccuracyExact
 	}
 
-	return &stateAndCountGetResponse{
-		Available: stateAndCountRes[rivertype.JobStateAvailable],
-		Cancelled: stateAndCountRes[rivertype.JobStateCancelled],
-		Completed: stateAndCountRes[rivertype.JobStateCompleted],
-		Discarded: stateAndCountRes[rivertype.JobStateDiscarded],
-		Pending:   stateAndCountRes[rivertype.JobStatePending],
-		Retryable: stateAndCountRes[rivertype.JobStateRetryable],
-		Running:   stateAndCountRes[rivertype.JobStateRunning],
-		Scheduled: stateAndCountRes[rivertype.JobStateScheduled],
-	}, nil
+	cappedStates := make([]rivertype.JobState, 0, len(allJobStates))
+	for _, state := range allJobStates {
+		if boundedSnapshot.Counts[state] > a.countMax {
+			cappedStates = append(cappedStates, state)
+		}
+	}
+
+	var (
+		exactSnapshot, hasExactSnapshot = a.exactQueryCacher.CachedRes()
+		exactSnapshotIsFresh            = hasExactSnapshot && time.Since(exactSnapshot.ObservedAt) <= stateCountExactMaxAge
+	)
+
+	statesNeedingEstimate := make([]rivertype.JobState, 0, len(cappedStates))
+	for _, state := range cappedStates {
+		if !exactSnapshotIsFresh || exactSnapshot.Counts[state] <= a.countMax {
+			statesNeedingEstimate = append(statesNeedingEstimate, state)
+		}
+	}
+
+	estimates := make(map[rivertype.JobState]stateCountEstimate)
+	if len(statesNeedingEstimate) > 0 {
+		var err error
+		estimates, err = a.estimateCounts(ctx, statesNeedingEstimate)
+		if err != nil {
+			// Estimates are an optional telemetry enhancement. The bounded count
+			// is still trustworthy, so degrade to a lower bound instead of failing
+			// the entire sidebar when planner statistics can't be read.
+			a.Logger.WarnContext(ctx, "Unable to estimate large job counts", "err", err)
+			estimates = make(map[rivertype.JobState]stateCountEstimate)
+		}
+	}
+
+	resolvedCounts := make(map[rivertype.JobState]stateCountResponse, len(allJobStates))
+	for _, state := range allJobStates {
+		boundedCount := boundedSnapshot.Counts[state]
+
+		if boundedCount <= a.countMax {
+			// The bounded scan reached the end of this state's index range, so the
+			// value is exact at the snapshot's observation time. Reused snapshots
+			// must still be labeled as cached, even for these small counts.
+			resolvedCounts[state] = stateCountResponse{
+				Accuracy:   boundedAccuracy,
+				Count:      boundedCount,
+				ObservedAt: &boundedSnapshot.ObservedAt,
+			}
+			continue
+		}
+
+		if exactSnapshotIsFresh && exactSnapshot.Counts[state] > a.countMax {
+			// A recent full scan preserves the useful magnitude for common large
+			// states. Its timestamp makes the deliberate staleness visible.
+			resolvedCounts[state] = stateCountResponse{
+				Accuracy:   stateCountAccuracyExactCached,
+				Count:      exactSnapshot.Counts[state],
+				ObservedAt: &exactSnapshot.ObservedAt,
+			}
+			continue
+		}
+
+		if estimate, ok := estimates[state]; ok && estimate.Count > a.countMax {
+			// Planner statistics are cheap and retain an order of magnitude during
+			// cold start or when the last exact snapshot has become too old.
+			resolvedCounts[state] = stateCountResponse{
+				Accuracy:   stateCountAccuracyEstimated,
+				Count:      estimate.Count,
+				ObservedAt: estimate.ObservedAt,
+			}
+			continue
+		}
+
+		// The bounded scan proves only that there are more than countMax rows.
+		// Never present a stale planner estimate below that known lower bound.
+		resolvedCounts[state] = stateCountResponse{
+			Accuracy:   stateCountAccuracyLowerBound,
+			Count:      a.countMax,
+			ObservedAt: &boundedSnapshot.ObservedAt,
+		}
+	}
+
+	resp := &stateAndCountGetResponse{
+		Available: resolvedCounts[rivertype.JobStateAvailable],
+		Cancelled: resolvedCounts[rivertype.JobStateCancelled],
+		Completed: resolvedCounts[rivertype.JobStateCompleted],
+		Discarded: resolvedCounts[rivertype.JobStateDiscarded],
+		Pending:   resolvedCounts[rivertype.JobStatePending],
+		Retryable: resolvedCounts[rivertype.JobStateRetryable],
+		Running:   resolvedCounts[rivertype.JobStateRunning],
+		Scheduled: resolvedCounts[rivertype.JobStateScheduled],
+	}
+
+	return resp, nil
+}
+
+type stateCountSnapshot struct {
+	Counts     map[rivertype.JobState]int
+	ObservedAt time.Time
+}
+
+type stateCountEstimate = riveruidriver.JobCountEstimateResult
+
+var allJobStates = []rivertype.JobState{ //nolint:gochecknoglobals
+	rivertype.JobStateAvailable,
+	rivertype.JobStateCancelled,
+	rivertype.JobStateCompleted,
+	rivertype.JobStateDiscarded,
+	rivertype.JobStatePending,
+	rivertype.JobStateRetryable,
+	rivertype.JobStateRunning,
+	rivertype.JobStateScheduled,
+}
+
+func (a *stateAndCountGetEndpoint[TTx]) queryBoundedCounts(ctx context.Context) (stateCountSnapshot, error) {
+	return dbutil.WithTxV(ctx, a.DB, func(ctx context.Context, execTx riverdriver.ExecutorTx) (stateCountSnapshot, error) {
+		counts, err := a.driver.GetExecutor(execTx).JobCountByAllStatesCapped(ctx, &riveruidriver.JobCountByAllStatesCappedParams{
+			Max:    a.countMax,
+			Schema: a.Client.Schema(),
+		})
+		if err != nil {
+			return stateCountSnapshot{}, err
+		}
+		return stateCountSnapshot{Counts: counts, ObservedAt: time.Now()}, nil
+	})
+}
+
+func (a *stateAndCountGetEndpoint[TTx]) queryExactCounts(ctx context.Context) (stateCountSnapshot, error) {
+	return dbutil.WithTxV(ctx, a.DB, func(ctx context.Context, execTx riverdriver.ExecutorTx) (stateCountSnapshot, error) {
+		counts, err := execTx.JobCountByAllStates(ctx, &riverdriver.JobCountByAllStatesParams{
+			Schema: a.Client.Schema(),
+		})
+		if err != nil {
+			return stateCountSnapshot{}, fmt.Errorf("error counting all jobs by state exactly: %w", err)
+		}
+		return stateCountSnapshot{Counts: counts, ObservedAt: time.Now()}, nil
+	})
+}
+
+func stateCountExactRefreshPeriod(queryDuration time.Duration, queryErr error) time.Duration {
+	if queryErr != nil {
+		// A failed full-table count is likely load-related. Back off to the
+		// maximum interval instead of repeatedly adding pressure to the database.
+		return stateCountExactRefreshMax
+	}
+
+	// Target about two percent of wall time for full exact counts. Fast counts
+	// still wait at least 30 seconds, while the maximum keeps exact telemetry
+	// reasonably fresh on very large installations.
+	refreshPeriod := queryDuration * stateCountExactRefreshCostMul
+	return min(max(refreshPeriod, stateCountExactRefreshMin), stateCountExactRefreshMax)
+}
+
+// queryEstimatedCounts delegates planner telemetry to the database-specific UI
+// driver. Drivers without an estimate strategy return no estimates, causing the
+// endpoint to retain the lower bound proven by the capped query.
+func (a *stateAndCountGetEndpoint[TTx]) queryEstimatedCounts(ctx context.Context, states []rivertype.JobState) (map[rivertype.JobState]stateCountEstimate, error) {
+	return dbutil.WithTxV(ctx, a.DB, func(ctx context.Context, execTx riverdriver.ExecutorTx) (map[rivertype.JobState]stateCountEstimate, error) {
+		return a.driver.GetExecutor(execTx).JobCountEstimate(ctx, &riveruidriver.JobCountEstimateParams{
+			Schema: a.Client.Schema(),
+			States: states,
+		})
+	})
 }
 
 func NewNotFoundJob(jobID int64) *apierror.NotFound {
@@ -1028,20 +1244,20 @@ type PartitionConfig struct {
 }
 
 type RiverJobMinimal struct {
-	ID          int64           `json:"id"`
-	Args        json.RawMessage `json:"args"`
-	Attempt     int             `json:"attempt"`
-	AttemptedAt *time.Time      `json:"attempted_at"`
-	AttemptedBy []string        `json:"attempted_by"`
-	CreatedAt   time.Time       `json:"created_at"`
-	FinalizedAt *time.Time      `json:"finalized_at"`
-	Kind        string          `json:"kind"`
-	MaxAttempts int             `json:"max_attempts"`
-	Priority    int             `json:"priority"`
-	Queue       string          `json:"queue"`
-	ScheduledAt time.Time       `json:"scheduled_at"`
-	State       string          `json:"state"`
-	Tags        []string        `json:"tags"`
+	ID          int64      `json:"id"`
+	Args        string     `json:"args"`
+	Attempt     int        `json:"attempt"`
+	AttemptedAt *time.Time `json:"attempted_at"`
+	AttemptedBy []string   `json:"attempted_by"`
+	CreatedAt   time.Time  `json:"created_at"`
+	FinalizedAt *time.Time `json:"finalized_at"`
+	Kind        string     `json:"kind"`
+	MaxAttempts int        `json:"max_attempts"`
+	Priority    int        `json:"priority"`
+	Queue       string     `json:"queue"`
+	ScheduledAt time.Time  `json:"scheduled_at"`
+	State       string     `json:"state"`
+	Tags        []string   `json:"tags"`
 }
 
 type RiverJob struct {
@@ -1073,7 +1289,7 @@ func riverJobToSerializableJobMinimal(riverJob *rivertype.JobRow) *RiverJobMinim
 
 	return &RiverJobMinimal{
 		ID:          riverJob.ID,
-		Args:        riverJob.EncodedArgs,
+		Args:        string(riverJob.EncodedArgs),
 		Attempt:     riverJob.Attempt,
 		AttemptedAt: riverJob.AttemptedAt,
 		AttemptedBy: attemptedBy,
@@ -1100,25 +1316,43 @@ type RiverQueue struct {
 }
 
 func riverQueueToSerializableQueue(internal rivertype.Queue, count *riverdriver.JobCountByQueueAndStateResult) *RiverQueue {
-	var concurrency *ConcurrencyConfig
-	if len(internal.Metadata) > 0 {
-		var metadata struct {
-			Concurrency *ConcurrencyConfig `json:"concurrency"`
-		}
-		if err := json.Unmarshal(internal.Metadata, &metadata); err == nil {
-			concurrency = metadata.Concurrency
-		}
-	}
-
 	return &RiverQueue{
 		CountAvailable: int(count.CountAvailable),
 		CountRunning:   int(count.CountRunning),
 		CreatedAt:      internal.CreatedAt,
-		Concurrency:    concurrency,
+		Concurrency:    queueConcurrencyFromMetadata(internal.Metadata),
 		Name:           internal.Name,
 		PausedAt:       internal.PausedAt,
 		UpdatedAt:      internal.UpdatedAt,
 	}
+}
+
+// queueConcurrencyFromMetadata extracts a queue's concurrency override from
+// its metadata. A missing key, `null`, and `{}` all mean "no override" to River
+// Pro, so they all return nil. Any other object is a full override where
+// omitted fields are zero values rather than being merged with client config.
+func queueConcurrencyFromMetadata(metadata []byte) *ConcurrencyConfig {
+	if len(metadata) == 0 {
+		return nil
+	}
+
+	var parsed struct {
+		Concurrency json.RawMessage `json:"concurrency"`
+	}
+	if err := json.Unmarshal(metadata, &parsed); err != nil {
+		return nil
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(parsed.Concurrency, &fields); err != nil || len(fields) == 0 {
+		return nil
+	}
+
+	var concurrency ConcurrencyConfig
+	if err := json.Unmarshal(parsed.Concurrency, &concurrency); err != nil {
+		return nil
+	}
+	return &concurrency
 }
 
 func riverQueuesToSerializableQueues(internal []*rivertype.Queue, counts []*riverdriver.JobCountByQueueAndStateResult) *listResponse[RiverQueue] {
@@ -1132,4 +1366,45 @@ func riverQueuesToSerializableQueues(internal []*rivertype.Queue, counts []*rive
 		queues[i] = riverQueueToSerializableQueue(*internalQueue, countsMap[internalQueue.Name])
 	}
 	return listResponseFrom(queues)
+}
+
+//
+// versionGetEndpoint
+//
+
+type versionGetEndpoint[TTx any] struct {
+	apibundle.APIBundle[TTx]
+	apiendpoint.Endpoint[versionGetRequest, versionGetResponse]
+}
+
+func newVersionGetEndpoint[TTx any](bundle apibundle.APIBundle[TTx]) *versionGetEndpoint[TTx] {
+	return &versionGetEndpoint[TTx]{APIBundle: bundle}
+}
+
+func (*versionGetEndpoint[TTx]) Meta() *apiendpoint.EndpointMeta {
+	return &apiendpoint.EndpointMeta{
+		Pattern:    "GET /api/version",
+		StatusCode: http.StatusOK,
+	}
+}
+
+type versionGetRequest struct{}
+
+type versionGetResponse struct {
+	Version   string `json:"version"`
+	Revision  string `json:"revision"`
+	Time      string `json:"time"`
+	Modified  bool   `json:"modified"`
+	GoVersion string `json:"go_version"`
+}
+
+func (*versionGetEndpoint[TTx]) Execute(_ context.Context, _ *versionGetRequest) (*versionGetResponse, error) {
+	info := buildinfo.Get()
+	return &versionGetResponse{
+		Version:   info.Version,
+		Revision:  info.Revision,
+		Time:      info.Time,
+		Modified:  info.Modified,
+		GoVersion: info.GoVersion,
+	}, nil
 }
